@@ -1,0 +1,565 @@
+#!/bin/bash
+
+# =====[ GLO CORE ]============================================================
+#
+#	Written by Francois Joubert
+#	Sep 2013
+#
+#	This is the core of glo.
+#
+# =============================================================================
+
+lib glocore
+
+# -----[ INIT ]----------------------------------------------------------------
+
+# [info-doc init]
+# {BLU}init [-task|t] <SystemName>
+#   Initializes the current directory as a glo repo.
+#   It creates the .glo dir and config, a starting version tag 0.1.0, and the dev branch.
+#   -t	Also creates a task branch to do system-setup.
+glo_init() {
+	argo "task|t:SetupTaskFlag !SystemName" "$@"
+
+	set -e
+
+	if [[ ! -d .git ]]; then
+		echo "!> This is not a git repo."
+		exit 1
+	fi
+
+	if [[ -d .glo ]]; then
+		echo "!> This repo is already initialized."
+		exit 1
+	fi
+
+	echo ">> Initializing glo repo..."
+	
+	mkdir .glo
+	echo "{system_name, $SystemName}." > .glo/config
+
+	git add .
+	git commit -am 'Initial commit'
+	
+	echo ">> Tagging as version '0.1.0'..."
+	git_tag "0.1.0"
+	git_push master
+
+	echo ">> Pushing dev to origin..."
+	git_branch dev
+	git_push dev
+
+	if $SetupTaskFlag; then
+		echo ">> Creating setup task..."
+		glo task system-setup
+	fi
+
+	echo ">> Repo initialized."
+}
+
+# -----[ TASK ]----------------------------------------------------------------
+
+# [info-doc task]
+# {BLU}task [-force|f] [-noup|n] [-type|t <Type> (task)] <TaskName>
+#   Creates a new Type/<TaskName> branch from the latest dev state.
+#   Uncommitted changes may be transfered to the task branch.
+#   Aliases: t
+#   -f	Overrides existing banch.
+#   -n	Skips dev update from origin before the task is created.
+#   -t	Specifies the type of task to create: task (default), feature, bug or hotfix.
+glo_task() {
+	argo "force|f:Override noup|n:NoUp type|t=TaskType?task @TaskName" "$@"
+
+	TaskName=${TaskName// /-}
+	TaskName=${TaskName//_/-}
+
+	if [[ ! ":task:feature:bug:hotfix:" == *$TaskType* ]]; then
+		echo "!> Invalid type $TaskType"
+		exit 1
+	fi
+
+	if ! git_wd_clean && ! git_transfer; then
+		echo "!> Aborted."
+		exit 1
+	fi
+
+	if [[ $TaskType != "hotfix" ]]; then
+		if git_branch_exist $TaskType/$TaskName; then
+			if $Override; then 
+				git_branch_delete $TaskType/$TaskName
+				echo "!> Branch $TaskName overridden!"
+			else
+				prompt "The $TaskType $TaskName exists, would you like to check it out?" !yes:continue abort:exit1
+
+				echo ">> Checking out $TaskType $TaskName..."
+				git_checkout $TaskType/$TaskName
+				# BranchDate not definitive
+				# if git_branch_isnewer dev; then
+				# 	echo ">> This $TaskType is out of date - run 'glo up'"
+				# fi
+				
+				git_transfer_apply
+	
+				exit 0
+			fi
+		fi
+
+		git_checkout dev
+		if ! $NoUp; then
+			git_pull dev
+		else
+			echo "!> Not updating dev - you may not have the latest changes."
+		fi
+	else
+		BaseVersion=$TaskName
+		if git_tag_exist $BaseVersion; then
+			git_checkout $BaseVersion
+			git_version_bump $BaseVersion x.x.+; TaskName=$RET # todo: may only create hotfix on latest minor version
+		else
+			echo "!> Invalid version $BaseVersion."
+			exit 1
+		fi
+	fi
+
+	if git_branch $TaskType/$TaskName; then
+		echo ">> Branch $TaskType $TaskName created."
+	fi
+
+	git_transfer_apply
+}
+
+# -----[ FEATURE ]-------------------------------------------------------------
+
+# [info-doc feature]
+# {BLU}feature <FeatureName>
+#   Creates a new task of type 'feature' with name <FeatureName>.
+#   Uncommitted changes may be transfered to the task branch.
+#   Aliases: f
+glo_feature() {
+	argo "@Args" "$@" # todo: problems with options in argo
+
+	glo_task -type feature "$Args"
+}
+
+# -----[ BUG ]-----------------------------------------------------------------
+
+# [info-doc bug]
+# {BLU}bug <BugName>
+#   Creates a new task of type 'bug' with name <BugName>.
+#   Uncommitted changes may be transfered to the task branch.
+#   Aliases: b
+glo_bug() {
+	argo "@Args" "$@"
+
+	glo_task -type bug "$Args"
+}
+
+# -----[ HOTFIX ]--------------------------------------------------------------
+
+# [info-doc hotfix]
+# {BLU}hotfix <Version>
+#   Creates a new hotfix/<Version(Fix+1)> branch from the state at <Version> in either master or another hotfix branch.
+#   With versioning 'Maj.Min.Fix', the 'Fix' number is incremented and used as the hotfix branch name.
+#   Uncommitted changes may be transfered to the hotfix branch.
+#   Aliases: fix
+glo_hotfix() {
+	argo "!InputVersion" "$@"
+
+	git_version_check $InputVersion; CheckedVersion=$RET
+	
+	glo_task -type hotfix $CheckedVersion
+}
+
+# -----[ ST ]------------------------------------------------------------------
+
+# [info-doc st]
+# {BLU}st
+#   Displays modification status on main and all deps.
+glo_st() {
+	argo -- "$@"
+
+	st_delegate() {
+		delRepoName=$1
+		delWorkingDir=$2
+
+		unset RET
+		delGitSt=$(git status --porcelain)
+		if [[ $delGitSt == "" ]]; then
+			RET=">> No modifications.\n"
+			return 1
+		fi
+		
+		delGitSt=${delGitSt// /-}
+		delGitSt=${delGitSt//$'\n'/ }
+		for delLine in $delGitSt; do
+			delStatus=${delLine:0:2}
+			delStatus=${delStatus//-/ }
+			delFile="$(pwd)/${delLine:3}"
+			delFile="${delFile#$delWorkingDir/}"
+			RET="$RET$delStatus $delFile\n"
+		done
+	}
+
+	WorkingDir=$(pwd)
+	goto_parent_dir '[[ -d .git ]]'
+
+	foreach_subrepo st_delegate $WorkingDir
+}
+
+# -----[ UP ]------------------------------------------------------------------
+
+# [info-doc up]
+# {BLU}up
+#   Updates the current task branch from the latest state in dev. 
+#   The dev branch is updated from origin before it is merged into the task branch.
+glo_up() {
+	argo -- "$@"
+
+	git_branch_gettype; TaskType=$TYPE; TaskName=$NAME
+
+	if [[ $TaskType == "dev" ]]; then
+		echo "!> You are not on a task branch, to updated the entire system, run 'glo update'."
+		exit 1
+	fi
+
+	if ! git_wd_clean; then
+		echo "!> Uncommitted changes detected - cannot update $TaskType."
+		exit 1
+	fi
+
+	git_checkout dev
+	if ! git_pull dev; then
+		git merge --abort
+		echo "!> Merge aborted, please run 'glo update' and fix dev merge conflicts."
+		exit 1
+	fi
+
+	git_checkout $TaskType/$TaskName
+	# if git_branch_isnewer dev; then # this incorrectly determine if the br needs update
+		if git_merge dev "Updated $TaskType $TaskName from dev"; then
+			echo ">> Branch $TaskType $TaskName updated with latest changes."
+		else
+			echo "!> Conflicts occured during merge. Please fix the mess... then run 'glo messfixed' :)"
+		fi
+	# else
+	# 	echo ">> Branch $TaskType already up to date."
+	# fi
+}
+
+# -----[ BAK ]-----------------------------------------------------------------
+
+# [info-doc bak]
+# {BLU}bak
+#   Backs up all unmerged tasks to origin. The remote branch is prefixed with your username 
+#   to avoid name conflicts.
+glo_bak() {
+	argo -- "$@"
+
+	if ! git_wd_clean; then
+		# todo: prompt for WIP
+		echo "!> Uncommitted changes detected - are you sure you would like to backup without committing?"
+	fi
+
+	UnmergedBranches=$(git branch --no-merged dev | grep -v master)
+	UnmergedBranches=${UnmergedBranches/\*/}
+	debug -2 "UnmergedBranches $UnmergedBranches"
+
+	if [[ -z $UnmergedBranches ]]; then
+		echo ">> All tasks are up to date."
+		exit 0
+	fi
+
+	unset BranchPushList
+	for BranchName in $UnmergedBranches; do
+		LocalBranchName=$BranchName
+		RemoteBranchName=$GLO_USERNAME/$BranchName
+
+		debug -2 "LocalBranchName $LocalBranchName; RemoteBranchName $RemoteBranchName"
+	
+		if ! git_branch_exist origin/$RemoteBranchName || git_branch_isnewer $BranchName origin/$RemoteBranchName; then
+			echo ">> Branch $BranchName has new commits."
+			BranchPushList="$BranchPushList$LocalBranchName:$RemoteBranchName "
+		else
+			echo ">> Branch $BranchName is backed up."
+		fi
+	done
+
+	if [[ -n $BranchPushList ]]; then
+		echo ">> Backing up..."
+		if git_push "$BranchPushList"; then
+			echo ">> Success."
+		fi
+	fi
+}
+
+# -----[ APPLY ]---------------------------------------------------------------
+
+# [info-doc apply]
+# {BLU}apply [-noup|n] [-delete|d]
+#   The current task branch is merged into dev. All changes must be commited.
+#   -n	Skips dev update from origin before the task is applied.
+#   -d	Deletes the task branch after it is merged into dev.
+glo_apply() {
+	argo "noup|n:NoUp delete|d:DeleteBranch" "$@"
+
+	git_branch_gettype; TaskType=$TYPE; TaskName=$NAME
+
+	if [[ $TaskType == "dev" ]]; then
+		echo "!> This is not a task branch - nothing to apply."
+		exit 1
+	fi
+
+	if ! git_wd_clean; then
+		prompt "Uncommitted changes detected - would you like to stash you changes?" yes:continue !abort:exit1
+		git_stash
+	fi
+	
+	git_checkout dev
+
+	if ! $NoUp; then
+		if ! git_pull dev; then
+			echo "!> Branch dev could not be updated - use the '-noup' flag to skip updating dev as a workaround."
+			git_checkout $TaskType/$TaskName
+			exit 1
+		fi
+	else
+		echo "!> Not updating dev - Warning: Merge conflicts is more likely to occur when dev is merged later."
+	fi
+	
+	case $TaskType in
+		feature) TaskApplyMessage="Added feature $TaskName" ;;
+		bug)     TaskApplyMessage="Fixed bug $TaskName" ;;
+		hotfix)  TaskApplyMessage="Applied hotfix $TaskName" ;;
+		*)       TaskApplyMessage="Completed task $TaskName" ;;
+	esac
+
+	if ! git_merge $TaskType/$TaskName "$TaskApplyMessage"; then
+		echo "!> Conflicts occured during merge. Please fix the mess... then run 'glo messfixed' :)"
+		echo ">> You could also abort the merge with 'git merge --abort' and try to update from within the $TaskType."
+		exit 1
+	fi
+	
+	unset BackupBranch
+	if git_branch_exist origin/$GLO_USERNAME/$TaskType/$TaskName; then
+		BackupBranch=":$GLO_USERNAME/$TaskType/$TaskName"
+	fi
+
+	if ! git_push dev $BackupBranch; then
+		exit 1
+	fi
+
+	if $DeleteBranch; then
+		echo "!> Deleting $TaskType branch..."
+		git_branch_delete $TaskType/$TaskName
+	fi
+}
+
+# [info-doc end]
+# {BLU}end
+#   Synonym for 'glo apply -delete'
+glo_end() { 
+	argo -- "$@"	
+
+	glo_apply -delete
+}
+
+# -----[ LS ]------------------------------------------------------------------
+
+# [info-doc ls]
+# {BLU}ls [-all|a]
+#   Lists unmerged tasks. 
+#   Note: New task branches needs at least one commit to be labeled as unmerged.
+#   -a	Displays all tasks.
+glo_ls() {
+	argo "all|a:All" "$@"
+	
+	ls_delegate() {
+		delRepoName=$1
+
+		if $All; then
+			delTasks=$(git branch | grep -v master | grep -v dev)
+			delUnmergedTasks=$(git branch --no-merged dev | grep -v master)
+		else
+			delTasks=$(git branch --no-merged dev | grep -v master)
+		fi
+
+		unset RET
+		if [[ -z $delTasks ]]; then
+			if $All; then
+				return 0
+			else
+				RET=">> No unmerged tasks.\n"
+				return 1
+			fi
+		fi
+
+		delTasks=${delTasks/\* /->}
+		for delTask in $delTasks; do
+			unset delMargin
+			if [[ $delTask != -\>* ]]; then
+				delMargin="  "
+			fi
+
+			if [[ "$delUnmergedTasks" == *$delTask* ]]; then
+				RET="$RET$delMargin\033[31m$delTask\033[0m\n"
+			else
+				RET="$RET$delMargin$delTask\n"
+			fi
+		done
+	}
+
+	foreach_subrepo ls_delegate
+}
+
+# -----[ UPDATE ]-----------------------------------------------------------------
+
+# [info-doc update]
+# {BLU}update
+#   Updates master and dev from origin. If deps.config exists deps is also updated.
+glo_update() {
+	argo -- "$@"
+
+	goto_parent_dir '[[ -d .glo ]]'
+
+	git_branch_gettype; TaskType=$TYPE; TaskName=$NAME
+
+	# stash and pop rather...
+	if ! git_wd_clean; then
+		echo "!> Uncommitted changes detected - cannot update."
+		exit 1
+	fi
+
+	git_checkout master
+	git_pull master
+
+	git_checkout dev
+	if ! git_pull dev; then
+		echo "!> Your dev branch diverged from dev on origin. Please fix the conflicts and run 'glo resolve', then 'glo update' again."
+		exit 1
+	fi
+	
+	if [[ -f deps.config ]]; then 
+		deps up
+	fi
+
+	if [[ $TaskType != "dev" ]]; then
+		git_checkout $TaskType/$TaskName
+	fi
+	
+	echo ">> System updated."
+}
+
+# -----[ LOG ]-----------------------------------------------------------------
+
+# [info-doc log]
+# {BLU}log [<StopVersion>]
+#   Displays a list of tasks applied to dev.
+glo_log() {
+	CurrentVersion="Dev"
+	NodeSha=$(git rev-parse dev)
+
+	PreviousVersion=$(git describe --tags --abbrev=0 master)
+	StopSha=$(git rev-parse "$PreviousVersion^2")
+	
+	StopVersion=${1:-$PreviousVersion}
+	git_version_check $StopVersion; StopVersion=$RET
+
+	while [[ $CurrentVersion != $StopVersion ]]; do
+		Header="-----[ $CurrentVersion ]------------------------------------------------------"
+		echo ${Header:0:60}
+		# echo "NodeSha: $NodeSha StopSha: $StopSha"
+		while [[ $NodeSha != $StopSha ]]; do
+			CommitText=$(git show --no-patch --format="%s - %an" $NodeSha)
+			echo "$CommitText"
+	
+			if ! NodeSha=$(git rev-parse $NodeSha^); then
+				return 1
+			fi
+		done
+		CurrentVersion=$PreviousVersion
+		PreviousVersion=$(git describe --tags --abbrev=0 $PreviousVersion^)
+		StopSha=$(git rev-parse "$PreviousVersion^2")
+	done
+}
+
+# -----[ RELEASE ]-------------------------------------------------------------
+
+# [info-doc release]
+# {BLU}release [[-fix|x] | [-major|m]]
+#   Merges the current dev state into master and tags it with the next version. All changes must be commited.
+#   With versioning 'Maj.Min.Fix', the 'Min' number is auto incremented.
+#   Aliases: rel
+#   -x	The 'Fix' number will be incremented instead.
+#   -m	The 'Maj' number will be incremented instead and 'Min' and 'Fix' reset to zero.
+glo_release() {
+	argo "fix|x:FixFlag major|m:MajorFlag" "$@"
+
+	if ! git_wd_clean; then
+		echo "!> Uncommitted changes detected - cannot create release."
+		exit 1
+	fi
+
+	git_checkout dev
+	git_pull dev
+
+	if git_branch_isnewer master dev; then
+		prompt "?> No tasks were added since the last release, would you like to rebuild the current release?" yes:continue !abort:exit1
+		echo ">> Rebuilding... (comming soon)"
+		exit
+	fi
+
+	git_checkout master
+	git_pull master
+
+	git_version_current; Version=$RET
+	if $MajorFlag; then
+		git_version_bump $Version +.0.0; NewVersion=$RET
+	elif $FixFlag; then
+		git_version_bump $Version x.x.+; NewVersion=$RET
+	else	
+		git_version_bump $Version x.+.0; NewVersion=$RET
+	fi
+
+	if ! git_merge dev "Released $NewVersion"; then
+		echo "!> Oh dear! Conflicts on master... what did you do??"
+		exit 1
+	fi
+
+	git_tag $NewVersion
+	echo ">> Version $NewVersion created."
+	
+	git_push master
+
+	git_checkout dev
+}
+
+# -----[ RESOLVE ]-------------------------------------------------------------
+
+# [info-doc resolve]
+# {BLU}resolve
+#   Adds and commits files that were in conflict state after a merge.
+glo_resolve() {
+	argo -- "$@"
+
+	goto_parent_dir '[[ -d .git ]]'
+
+	git_branch_gettype; TaskType=$TYPE
+
+	git add $(git diff --name-only --diff-filter=U)
+	git commit --no-edit
+
+	if [[ $TaskType == "dev" ]]; then
+		git_push dev
+	fi
+}
+
+# -----[ VERSION ]-------------------------------------------------------------
+
+# [info-doc version]
+# {BLU}version
+#   Displays the current version of glo.
+glo_version() {
+	git_version_current; echo "Version $RET"
+}
+
+# =============================================================================

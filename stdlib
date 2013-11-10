@@ -1,0 +1,423 @@
+#!/bin/bash
+
+# =====[ LIB : STANDARD LIB ]==================================================
+#
+# Written by Francois Joubert
+# Sep 2013
+#
+# =============================================================================
+
+# -----[ LIB ]-----------------------------------------------------------------
+
+lib() {
+	if [[ ${1:?} == import ]]; then
+		libLib=${2:?}
+		eval "\${LIBIMPORTED_$libLib:-false} || source $libLib"
+	elif [[ $1 == info ]]; then
+		libLib=${2:?}
+		LIBINFOLIST="$LIBINFOLIST $libLib"
+	else
+		debug -5 "Loading $libLib..."
+		eval "LIBIMPORTED_$libLib=true"
+	fi
+}
+
+# -----[ ARG OPTIONS ]---------------------------------------------------------
+
+# bug: @Var not letting options through if you need it.
+# todo: need 'pass through syntax for alias commands'
+argo() {
+	argoPrintInfo=true
+	if [[ $1 == -noinfo ]]; then
+		argoPrintInfo=false; shift
+	fi
+
+	argoSynopsis=${1:?}; shift
+	debug -4 "Synopsis: $argoSynopsis" 
+
+	argoCallingFunction=${FUNCNAME[1]}
+	argoFilterFunctionName=${argoCallingFunction#*_}
+	argoFilterFunctionName=${argoFilterFunctionName//_/ }
+
+	argoArgDbgList=$(arg_separator "$@")
+	debug -1 "$argoCallingFunction: [$argoArgDbgList]"
+
+	if [[ $argoSynopsis == - || $argoSynopsis == -- ]]; then
+		if [[ -n $1 ]]; then
+			echo "!> Too many arguments!"
+			$argoPrintInfo && print_info -nohead -synopsis $argoFilterFunctionName
+			exit 1
+		else
+			return 0
+		fi
+	fi
+
+	unset argoTagLst
+	unset argoVarLst
+	unset argoIsArgLst
+
+	unset argoManVarLst
+	# unset ManMsgLst
+
+	argoArgRest=false
+	argoArgRestDef=false
+	unset argoArgRestVar
+	unset argoArgRestDefVal
+
+	argo_tag_i=0
+	argo_man_i=0
+	for argoArgSynopsis in $argoSynopsis; do
+		debug -4 "ArgSynopsis: $argoArgSynopsis" 
+
+		if [[ $argoArgSynopsis == *=* ]]; then 
+			argoIsArg=true
+		else
+			argoIsArg=false
+		fi
+		argoArgSynopsis=${argoArgSynopsis/=/ }
+		argoArgSynopsis=${argoArgSynopsis/:/ }
+		argoArgSynopsis=($argoArgSynopsis)
+		argoTag=${argoArgSynopsis[0]}
+		argoVar=${argoArgSynopsis[1]}
+		
+		if [[ $argoTag == !* ]]; then
+			argoVar=${argoTag:1}
+			argoVar=(${argoVar%\?*})
+			# VarMsg=${argoTag:1}
+			# VarMsg=(${VarMsg/\?/ })
+			# argoManVarLst[$argo_man_i]=${VarMsg[0]}
+			argoManVarLst[$argo_man_i]=$argoVar
+			# ManMsgLst[$argo_man_i]=${VarMsg[1]}
+			# eval ${VarMsg[0]}=""
+			eval "unset $argoVar"
+			let "argo_man_i++"
+		elif [[ $argoTag == @* ]]; then
+			argoArgRest=true
+			argoArgRestVar=${argoTag:1}
+			if [[ $argoArgRestVar == *\?* ]]; then
+				argoArgRestDef=true
+				argoArgRestDefVal=${argoArgRestVar#*\?}
+				argoArgRestVar=${argoArgRestVar%\?*}
+			fi
+		else
+			argoTagLst[$argo_tag_i]=$argoTag
+			argoVarLst[$argo_tag_i]=$argoVar
+			argoIsArgLst[$argo_tag_i]=$argoIsArg
+			if $argoIsArg; then
+				unset argoVarDef
+				argoVarVar=${argoVar%\?*}
+				if [[ $argoVar == *\?* ]]; then
+					argoVarDef=${argoVar#*\?}
+				fi
+				debug -4 "Var: $argoVarVar=$argoVarDef"
+				eval $argoVarVar=$argoVarDef
+			else
+				eval $argoVar=false
+			fi	
+			let "argo_tag_i++"
+		fi	
+	done
+
+	debug -4 "Opt:[${argoTagLst[@]}|${argoVarLst[@]}|${argoIsArgLst[@]}] Man:[${argoManVarLst[@]}] Rst:[$argoArgRest|$argoArgRestVar|$argoArgRestDefVal]"
+
+	while [[ $1 == -* ]]; do
+		argoArg="$1" 
+		argoVal="$2"
+		shift
+
+		argoAssigned=false
+		for (( i = 0 ; i < ${#argoTagLst[@]} ; i++ )); do
+			argoTags=${argoTagLst[$i]}
+			argoTags=${argoTags/|/ }
+			argoVar=${argoVarLst[$i]}
+			argoIsArg=${argoIsArgLst[$i]}
+
+			for argoTag in $argoTags; do
+				if [[ $argoArg == -$argoTag ]]; then
+					if $argoIsArg; then
+						argoVar=${argoVar%\?*}
+						debug -4 "Var: $argoVar = $argoVal"
+						eval "$argoVar=\"$argoVal\""
+						shift
+					else
+						debug -4 "Var: $argoVar = true"
+						eval "$argoVar=true"
+					fi
+					argoAssigned=true
+					break
+				fi
+			done
+
+			$argoAssigned && break
+		done
+		if ! $argoAssigned; then
+			echo "!> Invalid option: $argoArg"
+			$argoPrintInfo && print_info -nohead -synopsis $argoFilterFunctionName
+			exit 1
+		fi
+	done
+
+	for (( i = 0 ; i < ${#argoManVarLst[@]} ; i++ )); do
+		argoArg=$1; shift
+		if [[ -n $argoArg ]]; then
+			argoManVar=${argoManVarLst[$i]}
+			debug -4 "Var: $argoManVar = $argoArg"
+			eval "$argoManVar=\"$argoArg\""
+		else
+			echo "!> Argument missing!"
+			$argoPrintInfo && print_info -nohead -synopsis $argoFilterFunctionName
+			exit 1
+		fi
+	done
+
+	if $argoArgRest && [[ -n $1 ]]; then
+		debug -4 "Var: $argoArgRestVar = $@"
+		eval "$argoArgRestVar=\"$@\""
+		RET="$@" ## RET depreciated; todo: fix implementation
+	elif $argoArgRest && [[ -z $1 ]]; then
+		if $argoArgRestDef; then
+			debug -4 "Var: $argoArgRestVar = $argoArgRestDefVal"
+			eval "$argoArgRestVar=$argoArgRestDefVal"
+		else
+			echo "!> Argument missing!"
+			$argoPrintInfo && print_info -nohead -synopsis $argoFilterFunctionName
+			exit 1
+		fi
+	elif ! $argoArgRest && [[ -n $1 ]]; then
+		echo "!> Too many arguments!"
+		$argoPrintInfo && print_info -nohead -synopsis $argoFilterFunctionName
+		exit 1
+	fi
+}
+
+# -----[ COMMAND OPTIONS ]-----------------------------------------------------
+
+cmdo() {
+	cmdoSynopsis=(${1:?}); shift
+	debug -4 "CmdSynopsis: $cmdoSynopsis" 
+
+	cmdoArgDbgList=$(arg_separator "$@")
+	debug -1 "${FUNCNAME[1]}: [$cmdoArgDbgList]"
+
+	for cmdoCmdSynopsis in ${cmdoSynopsis[@]}; do
+		if cmd_executer $cmdoCmdSynopsis "$@"; then
+			return
+		fi
+	done
+
+	return 1
+}
+
+cmd_executer() {	
+	cmdoCmdSynopsis=${1:?}; shift
+	cmdoArg="$1"; shift
+
+	debug -4 "CmdSubSynopsis: $cmdoCmdSynopsis -- $cmdoArg $@"
+		
+	if [[ $cmdoCmdSynopsis != *:* ]]; then
+		cmdoExeCmd=true
+		cmdoAliasList=${cmdoCmdSynopsis%%->*}
+		cmdoExeSynopsis=${cmdoCmdSynopsis#*->}
+		cmdoExeOnMatch=${cmdoExeSynopsis%&*}
+	else
+		cmdoExeCmd=false
+		cmdoAliasList=${cmdoCmdSynopsis%%:*}
+		cmdoCmdSynopsis=${cmdoCmdSynopsis#*:}
+	fi
+
+	cmdoAliases=(${cmdoAliasList//|/ })
+	for cmdoAlias in ${cmdoAliases[@]}; do
+		if [[ "$cmdoArg" == "$cmdoAlias" ]]; then
+			if $cmdoExeCmd; then
+				cmdoCmd=${cmdoExeOnMatch//%/$cmdoAlias}
+				cmdoArgDbgList=$(arg_separator "$@")
+				debug -4 "CmdExe: $cmdoCmd [$cmdoArgDbgList]"
+				$cmdoCmd "$@"
+			else
+				cmd_executer $cmdoCmdSynopsis "$@"
+			fi
+			return 0
+		fi
+	done
+	
+	if $cmdoExeCmd && [[ $cmdoExeSynopsis == *\&* ]]; then
+		cmdoExeElse=${cmdoExeSynopsis#*&}
+		cmdoCmd=${cmdoExeElse//%/$cmdoArg}
+		cmdoArgDbgList=$(arg_separator "$@")
+		debug -4 "CmdExe Else: $cmdoCmd [$cmdoArg|$cmdoArgDbgList]"
+		$cmdoCmd "$cmdoArg" "$@"
+		return 0
+	elif [[ $cmdoAlias == \& ]]; then
+		cmdoArgDbgList=$(arg_separator "$@")
+		debug -4 "CmdExe Other: $cmdoExeOnMatch [$cmdoArg|$cmdoArgDbgList]"
+		$cmdoExeOnMatch "$cmdoArg" "$@"
+		return 0		
+	fi	
+	return 1
+}
+
+# -----[ INFO / HELP ]---------------------------------------------------------
+
+# [info-doc print info]
+# {BLU}help [-nohead] [-short | -synopsis] <FilterFunction|all>
+#   Prints help for a specific sub command <FilterFunction> or all available help if <FilterFunction> = all (default).
+#   Aliases: info | ?
+#   -nohead	Does not print the header.
+#   -short	Only prints a short description on each sub command.
+#   -synopsis	Only prints the command synopsis.
+print_info() {
+	argo "nohead:infoNoHeader short:infoShortDoc synopsis:infoSynopsisDoc @infoFilterFunction?all" "$@"
+
+	infoTextFormats[00]="{RST}|\033[00m"
+	infoTextFormats[01]="{BLD}|\033[01m"
+	infoTextFormats[02]="{ULN}|\033[04m"
+	infoTextFormats[10]="{RED}|\033[31m"
+	infoTextFormats[11]="{GRN}|\033[32m"
+	infoTextFormats[12]="{YLW}|\033[33m"
+	infoTextFormats[13]="{BLU}|\033[34m"
+	infoTextFormats[14]="{MGN}|\033[35m"
+	infoTextFormats[15]="{CYN}|\033[36m"
+
+	if ! $infoNoHeader; then
+		echo
+		echo "     ------------------===:[ INFO PAGE ]:===------------------"
+		echo
+	fi
+
+	for Lib in $LIBINFOLIST; do
+		infoLibFile=$(which $Lib)
+		debug -5 "LibFile: $infoLibFile"
+		infoDocFlag=false
+		while read infoLine; do
+			if $infoDocFlag; then
+				if [[ $i == 1 ]] && $infoSynopsisDoc; then
+					infoDocFlag=false
+				elif [[ $i == 2 ]] && $infoShortDoc; then
+					infoDocFlag=false
+				elif [[ $infoLine != \#* ]]; then
+					infoDocFlag=false
+					echo
+					if [[ $infoFilterFunction != all ]]; then
+						return
+					fi
+				else
+					infoInfoLine=${infoLine#*# }
+					if $infoSynopsisDoc && [[ ! $infoCurrentInfoName == *main* ]]; then
+						echo -n "Synopsis: "
+					fi
+					for infoFormat in ${infoTextFormats[@]}; do
+						infoFormatParts=(${infoFormat/|/ })
+						infoInfoLine=${infoInfoLine/${infoFormatParts[0]}/${infoFormatParts[1]}}
+					done
+					echo -e "$infoInfoLine\033[0m"
+					let "i++"
+				fi
+			fi
+	
+			if [[ $infoLine =~ ^#.*info-doc ]]; then
+				infoCurrentInfoName=${infoLine#*info-doc }
+				infoCurrentInfoName=${infoCurrentInfoName%]*}
+				debug -5 "Info Name: $infoCurrentInfoName ($infoFilterFunction)"
+				if [[ $infoFilterFunction == all || $infoCurrentInfoName == $infoFilterFunction ]]; then
+					infoDocFlag=true
+					i=0
+				fi
+			fi
+		done < $infoLibFile
+	done
+	# echo "        ------------------===:[ END ]:===------------------"
+	echo
+}
+
+# -----[ DEBUG ]---------------------------------------------------------------
+
+debug() {
+	[[ $DEBUG != true ]] && return
+	
+	if [[ $1 == -* ]]; then
+		dbgDebugLevel=${1:1} 
+		shift
+	else
+		dbgDebugLevel=1
+	fi
+	dbgDebugMessage="$@"
+	
+	dbgLen=${#FUNCNAME[@]}
+	let "dbgCallDepth = dbgLen - 2"
+	dbgDebugFunction=${FUNCNAME[1]}
+	dbgDebugCallingFunction=${FUNCNAME[2]}
+	dbgLineNo=${BASH_LINENO[0]}
+	dbgDebugInfo=""
+
+	if [[ $dbgDebugLevel -le ${DEBUG_LEVEL:-0} && ## $dbgCallDepth -le ${DEBUG_CALLDEPTH:-1} && 
+		(-z $DEBUG_FUNCTION || $DEBUG_FUNCTION == all || $DEBUG_FUNCTION == *$dbgDebugFunction*) ]]; then
+
+		${DEBUG_INFO:-false} && dbgDebugInfo=" ($dbgDebugCallingFunction->$dbgDebugFunction:$dbgLineNo)"
+
+		echo -e "@$dbgDebugLevel:$dbgCallDepth>$dbgDebugInfo $dbgDebugMessage"
+
+		if ${DEBUG_STACK:-false}; then
+			let "dbgCnt = dbgCallDepth - 2"
+			for dbg_i in $(seq 0 $dbgCnt); do
+				let "dbg_is = dbg_i + 1"
+				echo "  ${FUNCNAME[$is]}:${BASH_LINENO[$dbg_i]} ${BASH_SOURCE[$is]}"
+			done
+		fi
+	fi
+}
+
+arg_separator() {
+	echo -n $1; shift
+	while [[ -n $1 ]]; do 
+		echo -n "|$1"
+		shift
+	done
+}
+
+# To use debug info source this function in your current shell.
+# Calling it displays its current status.
+# Use switches -l <Level>, -f <Function>, -d <Depth>, -i for extra info and -s for stack.
+# 'dbg off' turns it off again.
+dbg() {
+	if [[ $1 == off ]];then
+		export DEBUG=false
+		State="Off"
+	else
+		export DEBUG=true
+		State="On"
+		while [[ $1 == -* ]]; do
+			if [[ $1 == -f ]]; then
+				export DEBUG_FUNCTION="$2"; shift 2
+			
+			elif [[ $1 == -l ]]; then
+				export DEBUG_LEVEL="$2"; shift 2
+
+			elif [[ $1 == -d ]]; then
+				export DEBUG_CALLDEPTH="$2"; shift 2
+
+			elif [[ $1 == -i || $1 == -i+ ]]; then
+				export DEBUG_INFO=true; shift
+			elif [[ $1 == -i- ]]; then
+				export DEBUG_INFO=false; shift
+
+			elif [[ $1 == -s || $1 == -s+ ]]; then
+				export DEBUG_STACK=true; shift
+			elif [[ $1 == -s- ]]; then
+				export DEBUG_STACK=false; shift
+			
+			else
+				shift;
+			fi
+		done
+		DEBUG_LEVEL=${DEBUG_LEVEL:-1}
+		DEBUG_CALLDEPTH=${DEBUG_CALLDEPTH:-5}
+		DEBUG_INFO=${DEBUG_INFO:-false}
+		DEBUG_STACK=${DEBUG_STACK:-false}
+	fi
+
+	DebugInfo=-;  $DEBUG_INFO && DebugInfo=+
+	DebugStack=-; $DEBUG_STACK && DebugStack=+
+	echo "$State l$DEBUG_LEVEL d$DEBUG_CALLDEPTH i$DebugInfo s$DebugStack f[$DEBUG_FUNCTION]"
+}
+
+# =============================================================================

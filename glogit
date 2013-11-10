@@ -1,0 +1,162 @@
+#!/bin/bash
+
+# =====[ GLO GIT ]=============================================================
+#
+#	Written by Francois Joubert
+#	Oct 2013
+#
+#	This lib contains git aliasses and simple git commands.
+#
+# =============================================================================
+
+lib glogit
+
+# -----[ GIT COMMANDS ]--------------------------------------------------------
+
+# [info-doc add]
+# {BLU}add <FileList>
+#   Synonym for 'git add <FileList>'.
+glo_add() {
+	argo "@Files" "$@"
+
+	git add $Files
+}
+
+# [info-doc commit]
+# {BLU}commit [-index|i] [-amend|a] [-dirty|d] <Message>
+#   Commits modifications to repo.
+#   -i	Only commits the index in git
+#   -a	Amends the last commit with the current modifications, if <Message> is empty it is left unmodified
+#   -d	Allows a 'dirty' commit directly to dev - use SPARINGLY!
+glo_commit() {
+	argo "index|i:IndexFlag amend|a:AmendFlag dirty|d:DirtyFlag @Message?" "$@"
+
+	if [[ -z $Message ]] && ! $AmendFlag; then
+		echo "!> Message may only be empty with '-amend'."
+		exit 1
+	fi
+
+	git_branch_gettype; TaskType=$TYPE
+
+	if [[ $TaskType == master ]]; then
+		echo "!> Commits may not be made on master."
+		exit 1
+	fi
+
+	if [[ $TaskType == dev ]] && ! $DirtyFlag; then
+		echo "!> Commits should not be made directly to dev, but, for trivial commits use '-dirty' flag."
+		prompt "?> Would you like to create a task?" TaskName:var !abort:exit1
+
+		git_stash
+		glo_task "$TaskName"
+	fi
+
+	Message="$(echo ${Message:0:1} | tr '[:lower:]' '[:upper:]')${Message:1}"
+	if [[ "$Message" == *. ]]; then
+		Message="${Message%.}"
+	fi
+
+	if $DirtyFlag && [[ $TaskType == dev ]]; then
+		Message="Dirty commit: $Message"
+		git_pull dev
+	fi
+
+	CommitAddOption="-a"
+	if $IndexFlag; then unset CommitAddOption; fi
+	if $AmendFlag; then
+		if [[ -n "$Message" ]]; then
+			Commit=$(git commit $CommitAddOption --amend -m "$Message")
+		else
+			Commit=$(git commit $CommitAddOption --amend --no-edit)
+		fi
+	else
+		Commit=$(git commit $CommitAddOption -m "$Message")
+	fi
+	Commit=${Commit//$'\n'/$'\n'   }
+	echo -e ">> $Commit"
+
+	if $DirtyFlag && [[ $TaskType == dev ]]; then
+		git_push dev
+	fi
+}
+
+# [info-doc cii]
+# {BLU}cii <Message>
+#   Synonym for 'glo commit -index <Message>'.
+glo_cii() {
+	argo "@Message" "$@"
+
+	glo_commit -index "$Message"
+}
+
+# [info-doc cia]
+# {BLU}cia [<Message>]
+#   Synonym for 'glo commit -amend <Message>'.
+glo_cia() {
+	argo "@Message?" "$@"
+
+	glo_commit -amend "$Message"
+}
+
+# [info-doc co]
+# {BLU}co <Args>
+#   Synonym for 'git checkout <Args>'.
+glo_co() {
+	argo "@Args" "$@"
+
+	git checkout $Args
+}
+
+# [info-doc wip]
+# {BLU}wip
+#   Synonym for 'git commit -am WIP'.
+glo_wip() {
+	argo -- "$@"
+
+	git commit -am WIP
+}
+
+# [info-doc unwip]
+# {BLU}unwip
+#   Synonym for 'git reset HEAD^'.
+glo_unwip() {
+	argo -- "$@"
+
+	git reset --mixed HEAD^
+}
+
+# [info-doc reset]
+# {BLU}reset <Args>
+#   Synonym for 'git reset --hard <Args>'.
+glo_reset() {
+	argo "@Files?" "$@"
+
+	HardFlag=false
+	if [[ -z $Files ]]; then
+		HardFlag=true
+		Files="the working dir"
+	fi
+
+	prompt "Are you sure you would like to reset $Files to match the head commit?" yes:continue !abort:exit1
+
+	if $HardFlag; then
+		git reset --hard HEAD
+	else
+		git checkout $Files
+	fi
+}
+
+# [info-doc diff]
+# {BLU}diff <Args>
+#   Synonym for 'git diff <Args>'.
+glo_diff() {
+	argo "@Args?" "$@"
+
+	if [[ -z $Args ]]; then
+		git diff
+	else
+		git diff "$Args"
+	fi
+}
+
+# =============================================================================

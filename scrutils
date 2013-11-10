@@ -1,0 +1,159 @@
+#!/bin/bash
+
+# =====[ LIB : SCRUTILS ]======================================================
+#
+#	Written by Francois Joubert
+#	Sep 2013
+#
+#	Script utilities - common tools for bash scripting. 
+#
+# =============================================================================
+
+lib scrutils
+
+# -----[ FUNCTIONS ]-----------------------------------------------------------
+
+prompt() {
+	prmptText=${1:?}; shift
+	prmptOptions=(${@:?})
+
+	unset prmptOptionLabels
+	unset prmptOptionActions
+	prmptVarFlag=false
+	prmptOptionDefault=""
+	prmptOptionText=""
+
+	for (( i = 0 ; i < ${#prmptOptions[@]} ; i++ )); do
+		prmptOpt=${prmptOptions[$i]}
+		prmptOptLabel=${prmptOpt%:*}
+		prmptOptAction=${prmptOpt#*:}
+		
+		if [[ $prmptOptLabel == !* ]]; then
+			prmptOptionDefault=${prmptOptLabel:1}
+			prmptOptLabel=$prmptOptionDefault
+
+			prmptOptText="[${prmptOptLabel:0:1}]${prmptOptLabel:1}"
+		else
+			prmptOptText="(${prmptOptLabel:0:1})${prmptOptLabel:1}"
+		fi
+
+		if [[ $prmptOptAction == var ]]; then
+			prmptVarFlag=true
+			prmptOptionVarName=$prmptOptLabel
+			prmptOptText=$prmptOptLabel
+		fi
+
+		prmptOptionLabels[$i]=$prmptOptLabel
+		prmptOptionActions[$i]=$prmptOptAction
+		prmptOptionText="$prmptOptionText$prmptOptText "
+	done
+	prmptOptionText="($prmptOptionText\b):"
+
+	# echo ${prmptOptionLabels[@]}
+	# echo ${prmptOptionActions[@]}
+	# echo $prmptVarFlag
+	# echo $prmptOptionDefault
+
+	while true; do
+		echo -en "$prmptText $prmptOptionText "
+
+		if ${GLO_TEST_MODE:-false}; then
+			echo "Auto responding with: $GLO_PROMPT_RESPONSE"
+			prmptResponse=$GLO_PROMPT_RESPONSE
+		else
+			read prmptResponse
+		fi
+		
+		prmptResponse=$(echo $prmptResponse | tr '[:upper:]' '[:lower:]')
+			
+		if [[ -z $prmptResponse ]]; then
+			prmptResponse=${prmptOptionDefault:-NULL}
+		fi
+
+		for (( i = 0 ; i < ${#prmptOptionLabels[@]} ; i++ )); do
+			prmptOptionLabel=${prmptOptionLabels[$i]}
+			if [[ $prmptResponse == ${prmptOptionLabel:0:1} || $prmptResponse == $prmptOptionLabel ]]; then
+				prmptOptionAction=${prmptOptionActions[$i]}
+				case $prmptOptionAction in
+				var)
+					continue ;;
+				continue)
+					return 0 ;;
+				return*)
+					return ${prmptOptionAction#return} ;;
+				exit*)
+					echo "!> Aborted."
+					exit ${prmptOptionAction#exit} ;;
+				esac
+			fi
+		done
+	
+		if $prmptVarFlag; then
+			eval "$prmptOptionVarName=\"$prmptResponse\""
+			return 0
+		else	
+			echo "!> $prmptResponse is not a valid response, please try again..."
+		fi
+	done
+}
+
+exit_if_empty() {
+	if [[ $1 == - || $1 == -- ]]; then
+		Message=$2
+		[[ -n $Message ]] && echo $Message
+		exit 1
+	fi
+}
+
+goto_parent_dir() {
+    Condition=${1:?}
+    
+    # echo "$Condition"
+    while ! eval $Condition; do
+        cd ..
+
+        if [[ $(pwd) == / ]]; then
+            return 1
+        fi
+    done
+}
+
+ftTextFormats="
+	\#RST|\033[00m
+	\#BLD|\033[01m
+	\#ULN|\033[04m
+	\#RED|\033[31m
+	\#GRN|\033[32m
+	\#YLW|\033[33m
+	\#BLU|\033[34m
+	\#MGN|\033[35m
+	\#CYN|\033[36m"
+
+format_text() {
+	argo "w=ftWidth !ftText" "$@"
+
+	ftTextStripped=$ftText
+	for ftFormat in $ftTextFormats; do
+		ftFormatTag=${ftFormat%|*}
+		ftFormatCode=${ftFormat#*|}
+		ftText=${ftText//$ftFormatTag/$ftFormatCode}
+		ftTextStripped=${ftTextStripped//$ftFormatTag}
+	done
+
+	unset ftSpaces
+	if [[ -n $ftWidth ]]; then
+		ftLen=${#ftTextStripped}
+		if [[ $ftLen -gt $ftWidth ]]; then
+			ftFullLen=${#ftText}
+			let "ftNewLen = ftFullLen - (ftLen - ftWidth) - 1"
+			ftText="${ftText::ftNewLen}\033[00m"
+			ftSpaces=" "
+		else
+			let "ftPad = ftWidth - ftLen"
+			for (( i = 0 ; i < $ftPad ; i++ )); do ftSpaces="$ftSpaces "; done
+			# ftSpaces=$(printf "%${ftPad}s")
+		fi
+	fi
+
+	RET="$ftText\033[00m$ftSpaces"
+}

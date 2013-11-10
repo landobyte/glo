@@ -1,0 +1,66 @@
+#!/bin/bash
+
+# =====[ GLO ]=================================================================
+#
+#	Written by Francois Joubert
+#	Sep 2013
+#
+#	Git-flow implementation to create features releases and hotfixes.
+#
+# =============================================================================
+
+source stdlib
+[[ -f ~/.gloconfig ]] && source ~/.gloconfig
+
+lib import scrutils
+
+lib import glocore
+lib import glogit
+lib import glovis
+lib import xgit
+
+lib info stdlib
+lib info glocore
+lib info glogit
+lib info glovis
+
+# -----[ INTERNAL ]------------------------------------------------------------
+
+glo_internal() {
+	$@
+}
+
+# -----[ INVALID ]-------------------------------------------------------------
+
+glo_invalid_cmd() {
+	echo "!> No valid command specified."
+	echo ">> Run 'glo help'"
+}
+
+# -----[ MAIN ]----------------------------------------------------------------
+
+cmdo "init->glo_init
+	  
+	  task|t->glo_task
+	  feature|f->glo_feature
+	  bug|b->glo_bug
+	  hotfix|fix->glo_hotfix
+	  st|bak|up|apply|end|ls|log->glo_%
+	  visual|vis->glo_visual
+
+	  commit|ci->glo_commit
+	  cii|cia|add|diff->glo_%
+	  wip|unwip->glo_%
+	  reset->glo_%
+	  resolve->glo_resolve
+
+	  release|rel|r->glo_release
+	  
+	  update->glo_update
+	  
+	  version->glo_version
+	  internal->glo_internal
+	  help|info|?->print_info
+	  &->glo_invalid_cmd" "$@"
+
+# =============================================================================
