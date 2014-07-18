@@ -1,0 +1,99 @@
+#!/bin/bash
+
+# =====[ GIT TEST SUITE ]===================================================
+#
+#	Written by Francois Joubert
+#	Nov 2013
+#
+# =============================================================================
+
+source tacts
+source ~/.landobyte/apps/sht/git_env_init
+
+# -----[ TESTS ]---------------------------------------------------------------
+
+test.add() {
+	tacts.new_task
+	tacts.do_work modules/system/filenew
+	glo st
+	glo add modules/system/filenew
+	glo st
+	tacts.commit
+	tacts.apply
+}
+
+test.commit_index() {
+	tacts.new_task
+	tacts.do_work modules/system/file1
+	tacts.do_work modules/system/file2
+	tacts.do_work modules/system/file3
+	glo st
+
+	glo add modules/system/file1 modules/system/file2
+	glo st
+
+	tacts.commit -index 'Only committing file1 and 2'
+	glo st
+
+	tacts.commit '' 'Committing file3'
+	glo st
+}
+
+test.commit_amend() {
+	tacts.new_task
+	tacts.do_work modules/system/file1
+	tacts.do_work modules/system/file2
+	tacts.commit
+
+	tacts.do_work modules/system/file3
+	glo st
+
+	glo ci -amend
+	glo st
+}
+
+test.commit_dirty() {
+	echo "T> $(git reset --hard 2>&1)"
+	echo "T> $(git checkout dev 2>&1)"
+
+	tacts.do_work
+
+	isolate tacts.commit
+	assert_error
+
+	tacts.dev_commit
+}
+
+# glogit.reset() {
+
+# -----[ INIT & END ]----------------------------------------------------------
+
+git.init_suite() {
+	export IO_AutoRespondMode=true
+	export IO_PrintIndent="  |"
+
+	if [[ ! -d dev/system/.git ]]; then
+		git_env_init.run
+	fi
+
+	cd dev/system
+
+	return 0
+}
+
+git.end_suite() {
+	return 0
+}
+
+git.init_test() {
+	[[ -d modules/system ]]
+
+	return 0
+}
+
+git.end_test() {
+	# echo "END test"
+	return 0
+}
+
+# =============================================================================

@@ -1,0 +1,284 @@
+#!/bin/bash
+
+# =====[ GLO CORE TEST SUITE ]=================================================
+#
+#	Written by Francois Joubert
+#	Oct 2013
+#
+# =============================================================================
+
+export GIT_COMMITTER_DATE=946677600
+export GIT_AUTHOR_DATE=946677600
+
+source tacts
+source ~/.landobyte/apps/sht/git_env_init
+
+import xgit
+
+# -----[ TESTS ]---------------------------------------------------------------
+
+test.init() {
+	echo "T> Init first time..."
+	glo init system
+	echo "T> Init again..."
+	glo init system
+
+	local Deps="$(init.make_deps $TEST_DepUrl)"
+	local Config=$(head -4 .glo/config)$'\n'
+	Config+="$Deps"$'\n'
+	Config+=$(tail +5 .glo/config)
+	echo "$Config" > .glo/config
+}
+
+init.make_deps() {
+	local Url=${1:?}
+	echo -e "\
+	deps: [
+		{
+			dir: ./modules
+			repo: $Url/
+			version: latest
+			items: [
+				dependency1
+				dependency2
+				dependency3
+			]
+		}
+	]\n"
+}
+
+test.task() {
+	tacts.new_task
+	tacts.new_commit -st
+	tacts.apply
+}
+
+test.task_dirty_wd() {
+	tacts.do_work
+	# export IO_PromptResponse=y
+	tacts.new_task
+	glo st
+	tacts.commit
+	tacts.apply
+}
+
+test.task_force() {
+	tacts.new_task; local TaskName=$RET
+	tacts.new_commit
+	tacts.apply
+	assert_success
+
+	export IO_PromptResponse=a
+	isolate glo task $TaskName
+	assert_error
+
+	glo task -f $TaskName
+	tacts.new_commit
+	tacts.apply
+}
+
+test.task_rename() {
+	tacts.new_task; local TaskName=$RET
+	tacts.new_commit
+	glo task -rename ${TaskName}_renamed
+	tacts.apply
+}
+
+test.task_updev() {
+	tacts.unique_name; local TaskName=$RET
+	glo task -updev $TaskName
+	tacts.new_commit -st
+	tacts.apply
+}
+
+test.task_source() {
+	tacts.new_task
+	tacts.new_commit
+
+	tacts.unique_name; local TaskName=$RET
+	glo task -source this $TaskName
+	tacts.new_commit
+	tacts.apply
+}
+
+test.feature() {
+	tacts.new_task feature
+	tacts.new_commit -st
+	tacts.apply
+}
+
+test.bug() {
+	glo bug ticket-0034
+	tacts.new_commit -st
+	tacts.apply
+}
+
+test.apply_stay() {
+	tacts.new_task
+	tacts.new_commit
+	tacts.apply -stay
+	tacts.new_commit
+	tacts.apply
+}
+
+test.st() {
+	tacts.new_task
+	tacts.do_work modules/system/file1
+	tacts.do_work modules/system/file3
+	glo st
+	tacts.commit
+}
+
+test.ls() {
+	tacts.new_task
+	tacts.new_commit
+
+	tacts.new_task
+	tacts.new_commit
+
+	glo ls
+}
+
+_test.log() {
+	glo log
+}
+
+test.bak() {
+	tacts.new_task
+	tacts.new_commit
+	glo bak
+
+	tacts.new_commit
+	tacts.apply
+}
+
+test.rel() {
+	tacts.rel
+}
+
+test.relx() {
+	tacts.new_applied_task
+	tacts.rel -x
+}
+
+test.relm() {
+	tacts.new_applied_task
+	tacts.rel -m
+}
+
+test.up() {
+	local TaskName
+
+	tacts.new_task; TaskName=$RET
+	tacts.new_commit
+	echo "T> Leaving $TaskName for now..."
+
+	tacts.new_task
+	tacts.new_commit modules/system/file2
+	tacts.new_commit modules/system/file3
+	tacts.apply
+
+	export IO_PromptResponse=y
+	glo task $TaskName
+	tacts.new_commit
+
+	tacts.up
+
+	tacts.new_commit
+	tacts.apply
+}
+
+test.retrieve() {
+	echo "T> Creating another repo..."
+	cd ..; cp -r system system2; cd system2
+
+	echo "T> Update system2 deps..."
+	glo deps up
+
+	tacts.new_applied_task
+
+	echo "T> Returning to original repo..."
+	cd ../system
+
+	echo "T> Update..."
+	export IO_PromptResponse=y
+	glo retrieve
+}
+
+# test.retrieve_dirty_dep() {
+# 	echo "T> Goto system2..."
+# 	cd ../system2
+
+# 	tacts.new_applied_task
+
+# 	cd modules/dependency1
+# 	tacts.new_applied_task file1
+
+# 	cd ../dependency2
+# 	tacts.new_applied_task file2
+
+# 	echo "T> Returning to original repo..."
+# 	cd ../../../system
+
+# 	tacts.do_work modules/dependency2/file2
+# 	tacts.do_work modules/dependency3/file1
+
+# 	echo "T> Update..."
+# 	export IO_PromptResponse=y
+# 	glo retrieve
+# }
+
+# test.retrieve_conflict_dep() {
+# 	echo "T> Goto system2..."
+# 	cd ../system2
+
+# 	cd modules/dependency1
+# 	tacts.new_applied_task file1
+
+# 	echo "T> Returning to original repo..."
+# 	cd ../../../system
+
+# 	cd modules/dependency1
+# 	tacts.do_work file1 "some other code"
+# 	tacts.dev_commit
+
+# 	echo "T> Update..."
+# 	export IO_PromptResponse=y
+# 	glo retrieve
+# }
+
+# -----[ INIT & END ]----------------------------------------------------------
+
+core.init_suite() {
+	export IO_AutoRespondMode=true
+	export IO_PrintIndent="  |"
+
+	if [[ ! -d dev/system/.git ]]; then
+		git_env_init.run
+	fi
+
+	cd dev/system
+
+	return 0
+}
+
+core.end_suite() {
+	return 0
+}
+
+core.init_test() {
+	[[ -d modules/system ]]
+
+	return 0
+}
+
+core.end_test() {
+	# glo st
+	# glo view -r
+
+	IO_PromptResponse=""
+
+	return 0
+}
+
+# =============================================================================

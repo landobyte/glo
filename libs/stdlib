@@ -1,0 +1,722 @@
+#!/usr/bin/env bash
+
+# =====[ STANDARD LIB ]========================================================
+#
+# Written by Francois Joubert
+# Sep 2013
+#
+# =============================================================================
+
+# -----[ FUNCTIONS ]-----------------------------------------------------------
+
+source $HOME/.landobyte/landobyte.functions
+
+# -----[ LIB ]-----------------------------------------------------------------
+
+import() {
+	local Arg=${1:?}
+
+	local LibName=${Arg##*/} LibPath
+	if [[ ${LIB_Imports} != *:$LibName:* ]]; then
+		import.find_lib $Arg; LibPath=$RET
+		source $LibPath
+		LIB_Imports+=":$LibName:"
+		# __STDCommands+="$($LibName.cmdo 2> /dev/null || true) "
+		__STDInfoList+="$LibPath "
+	# else
+	# 	echo "Lib $Arg already imported"
+	fi
+}
+
+import.find_lib() {
+	local Lib=${1:?}
+
+	if [[ -f $Lib ]]; then
+		# echo "Absolute path $Lib"
+		RET=$Lib
+	elif [[ -f $LIB_Root/$Lib ]]; then
+		# echo "Lib path $LIB_Root/$Lib"
+		RET=$LIB_Root/$Lib
+	else
+		local CallingExe=${BASH_SOURCE[2]}
+		# echo "CallingExe: $CallingExe"
+		if [[ -L $CallingExe ]]; then
+			CallingExe=$(readlink $CallingExe)
+		fi
+		local LibPath=${CallingExe%/*}/$Lib
+		if [[ -f $LibPath ]]; then
+			# echo "Current path $LibPath"
+			RET=$LibPath
+		else
+			raise enverr_lib_not_found "Could not locate $Lib"
+		fi
+	fi
+}
+
+# lib() {
+# 	local Cmd=${1:?}
+# 	local Arg=${2:?}
+
+# 	if [[ $Cmd == import ]]; then # DEPRICATED
+# 		import $Arg
+# 	elif [[ $Cmd == def ]]; then # DEPRICATED
+# 		local LibName=${Arg##*/}
+# 		debug -5 "Loading $LibName (${BASH_SOURCE[1]})..."
+# 		__STDImports[$LibName]=true
+# 	elif [[ $Cmd == info ]]; then # DEPRICATED
+# 		import.find_lib $Arg; Arg=$RET
+# 		__STDInfoList+="$Arg "
+# 	elif [[ $Cmd == clr ]]; then
+# 		if [[ $Arg == cmdo ]]; then
+# 			unset __STDCommands
+# 		elif [[ $Arg == info ]]; then
+# 			unset __STDInfoList
+# 		fi
+# 	fi
+# }
+
+import stdio
+
+# -----[ ARG OPTIONS ]---------------------------------------------------------
+
+# argo2 aa+a:A bb+a=B?BDef C @L?LDef -- "$@"; $ASSIGN
+# argo2 -- "$@"
+# argo2 --- "$@"
+argo2() {
+	if [[ $1 == --- ]]; then
+		shift
+		ASSIGN="eval local Args; "
+		while [[ -n $1 ]]; do
+			ASSIGN+="Args+=(\"$1\") "
+			shift
+		done
+		return
+	fi
+
+	local ArgDef Ignore=false OptNames OptName OptVarNameAndDefault OptVarName
+	local ListVarNameAndDefault ListVarName HasList=false IsFlatList=false ListFirst=true
+	declare -A OptTypes OptVarNames
+	declare -a PosArgs
+
+	ASSIGN="eval local"
+	while [[ $1 != -- ]]; do
+		ArgDef=$1; shift || raise syserr_bad_argo
+		if $Ignore; then continue; fi
+
+		if [[ $ArgDef == *:* ]]; then
+			OptNames=${ArgDef%%:*}
+			OptNames=${OptNames//|/ }
+			OptNames=${OptNames//+/ }
+			OptVarName=${ArgDef#*:}
+			for OptName in $OptNames; do
+				OptVarNames[$OptName]=$OptVarName
+				OptTypes[$OptName]=flag
+			done
+			ASSIGN+=" $OptVarName=false"
+		elif [[ $ArgDef == *=* ]]; then
+			OptNames=${ArgDef%%=*}
+			OptNames=${OptNames//|/ }
+			OptNames=${OptNames//+/ }
+			OptVarNameAndDefault=${ArgDef#*=}
+			OptVarName=${OptVarNameAndDefault%%\?*}
+			for OptName in $OptNames; do
+				OptVarNames[$OptName]=$OptVarName
+				OptTypes[$OptName]=value
+			done
+			if [[ $OptVarNameAndDefault == *'?'* ]]; then
+				ASSIGN+=" $OptVarName=${OptVarNameAndDefault#*\?}"
+			else
+				ASSIGN+=" $OptVarName"
+			fi
+		elif [[ $ArgDef == @* || $ArgDef == %* ]]; then
+			if [[ $ArgDef == %* ]]; then
+				ListVarNameAndDefault=${ArgDef#%}
+				IsFlatList=true
+			else
+				ListVarNameAndDefault=${ArgDef#@}
+			fi
+			ListVarName=${ListVarNameAndDefault%%\?*}
+			if [[ $ListVarNameAndDefault == *'?'* ]]; then
+				ASSIGN+=" $ListVarName=${ListVarNameAndDefault#*\?}"
+			else
+				ASSIGN+=" $ListVarName=''"
+			fi
+			HasList=true
+			Ignore=true
+		else
+			PosArgs+=($ArgDef)
+			ASSIGN+=" $ArgDef"
+		fi
+	done; shift
+
+	ASSIGN+=";"
+
+# echo "${!OptVarNames[@]}"
+# echo "${OptVarNames[@]}"
+# echo "HasList:$HasList IsFlatList:$IsFlatList"
+
+	local Arg Value MissingArgs
+	declare -i PosArgCnt=${#PosArgs[@]} PosArgIdx=0
+
+	if [[ $PosArgCnt -gt 0 ]]; then
+		MissingArgs=true
+	else
+		MissingArgs=false
+	fi
+
+	while [[ -n $1 ]]; do
+		Arg=$1
+# echo "ARG: $Arg"
+		if [[ $Arg == -* ]]; then
+# echo "Option: $Arg $2"
+			OptName=${Arg#-}
+			OptVarName=${OptVarNames[$OptName]}
+			if [[ -z $OptVarName ]]; then
+				raise usrerr_invalid_option "Invalid option $OptName"
+				# echo "Invalid option $OptName"
+			elif [[ ${OptTypes[$OptName]} == value ]]; then
+				Value=$2; shift || raise usrerr_value_expected "Value expected for $OptName"
+				ASSIGN+=" $OptVarName=\"$Value\";"
+			else
+				ASSIGN+=" $OptVarName=true;"
+			fi
+		elif $MissingArgs; then
+# echo "Arg: $Arg"
+			Arg="${Arg//\'/\'}"
+			Arg="${Arg//\"/\\\"}"
+			Arg="${Arg//(/\\(}"
+			Arg="${Arg//)/\\)}"
+			Arg="${Arg// /\\ }"
+			ASSIGN+=" ${PosArgs[$PosArgIdx]}=$Arg;"
+			PosArgIdx+=1
+			if [[ $PosArgIdx == $PosArgCnt ]]; then
+				MissingArgs=false
+			fi
+		elif $HasList; then
+# echo "List: $Arg"
+			if  $IsFlatList; then
+				if [[ $# == 1 ]]; then
+					Arg="${Arg//\'/\'}"
+					Arg="${Arg//\"/\\\"}"
+					Arg="${Arg//(/\\(}"
+					Arg="${Arg//)/\\)}"
+					Arg="${Arg// /\\ }"
+					ASSIGN+=" $ListVarName=$Arg"
+				else
+# echo "List: $@"
+					ASSIGN+=" $ListVarName=\"$@\""
+				fi
+				break
+			elif $ListFirst; then
+				ASSIGN+=" $ListVarName=(\"$Arg\");"
+				ListFirst=false
+			else
+				ASSIGN+=" $ListVarName+=(\"$Arg\");"
+			fi
+		else
+			raise usrerr_too_many_arguments "Too many arguments"
+		fi
+		shift || true
+	done
+
+	if $MissingArgs; then
+		raise usrerr_argument_missing "Arguments missing"
+	fi
+
+# echo $ASSIGN
+}
+
+
+# key_argo a=A b=B c=C?c -- "$@"; $ASSIGN
+# func a=value c="super duper" b=false
+# func a=value b=false
+key_argo() {
+	declare -A ArgVars ArgDefs
+	local Key VarAndDefault
+
+	while [[ $1 != -- ]]; do
+		Key=${1%=*}
+		VarAndDefault=${1#*=}
+		if [[ $VarAndDefault == *"?"* ]]; then
+			ArgVars[$Key]=${VarAndDefault%\?*}
+			ArgDefs[$Key]=${VarAndDefault#*\?}
+		else
+			ArgVars[$Key]=$VarAndDefault
+			ArgDefs[$Key]=""
+		fi
+		shift
+	done; shift
+
+	ASSIGN="eval local"
+
+	local AllKeys=" ${!ArgVars[@]} "
+	local -i ShiftCount=0
+	while [[ $1 == *=* ]]; do
+		Key=${1%=*}
+		[[ $AllKeys == *" $Key "* ]] || raise syserr_bad_key
+		ASSIGN+=" ${ArgVars[$Key]}=\"${1##*=}\""; shift; ShiftCount+=1
+		unset ArgVars[$Key]
+	done
+
+	for Key in "${!ArgVars[@]}"; do
+		ASSIGN+=" ${ArgVars[$Key]}=\"${ArgDefs[$Key]}\""
+	done
+
+	ASSIGN+="; shift $ShiftCount || true"
+	RET="$@"
+}
+
+#[depricated]
+# SYNTAX: switch:Var | switch=Var?default | !Param | @List?default
+argo() {
+	local PrintInfo=true
+	if [[ $1 == -noinfo ]]; then
+		PrintInfo=false; shift || true
+	fi
+	local Synopsis=${1:?}; shift || true
+
+	local CallingFunction=${FUNCNAME[1]}
+	local FilterFunctionName=${CallingFunction#*.}
+	FilterFunctionName=${FilterFunctionName//_/ }
+
+	# Slow...
+	# ArgDbgList=$(std.arg_separator "$@")
+	# debug -1 "FUNC: $CallingFunction [$ArgDbgList]"
+	debug -4 "Synopsis: $Synopsis"
+
+	if [[ $Synopsis == - || $Synopsis == -- ]]; then
+		if [[ -n $1 ]]; then
+			echo "!> This takes no arguments."
+			$PrintInfo && print_info -nohead -synopsis $FilterFunctionName
+			terminate usrerr_too_many_arguments
+		else
+			return 0
+		fi
+	fi
+
+	local TagLst VarLst IsArgLst ManVarLst
+	local ArgRest=false ArgRestDef=false ArgRestVar ArgRestDefVal VarVar
+	local ArgSynopsis IsArg Tag Tags Var Arg Val
+	declare -i tag_i=0 man_i=0
+
+	for ArgSynopsis in $Synopsis; do
+		debug -4 "ArgSynopsis: $ArgSynopsis"
+
+		if [[ $ArgSynopsis == *=* ]]; then
+			IsArg=true
+		else
+			IsArg=false
+		fi
+		ArgSynopsis=${ArgSynopsis/=/ }
+		ArgSynopsis=${ArgSynopsis/:/ }
+		ArgSynopsis=($ArgSynopsis)
+		Tag=${ArgSynopsis[0]}
+		Var=${ArgSynopsis[1]}
+
+		if [[ $Tag == !* ]]; then
+			Var=${Tag:1}
+			Var=(${Var%\?*})
+			ManVarLst[$man_i]=$Var
+			eval "unset $Var"
+			man_i+=1
+		elif [[ $Tag == @* ]]; then
+			ArgRest=true
+			ArgRestVar=${Tag:1}
+			if [[ $ArgRestVar == *\?* ]]; then
+				ArgRestDef=true
+				ArgRestDefVal=${ArgRestVar#*\?}
+				ArgRestVar=${ArgRestVar%\?*}
+			fi
+		else
+			TagLst[$tag_i]=$Tag
+			VarLst[$tag_i]=$Var
+			IsArgLst[$tag_i]=$IsArg
+			if $IsArg; then
+				unset VarDef
+				VarVar=${Var%\?*}
+				if [[ $Var == *\?* ]]; then
+					VarDef=${Var#*\?}
+				fi
+				debug -4 "Var: $VarVar=$VarDef"
+				eval $VarVar=$VarDef
+			else
+				eval $Var=false
+			fi
+			tag_i+=1
+		fi
+	done
+
+	debug -4 "Opt:[${TagLst[@]}|${VarLst[@]}|${IsArgLst[@]}] Man:[${ManVarLst[@]}] Rst:[$ArgRest|$ArgRestVar|$ArgRestDefVal]"
+# echo "Opt:[${TagLst[@]}|${VarLst[@]}|${IsArgLst[@]}] Man:[${ManVarLst[@]}] Rst:[$ArgRest|$ArgRestVar|$ArgRestDefVal]"
+
+	while [[ $1 == -* ]]; do
+		Arg="$1"
+		Val="$2"
+		shift || true
+
+		local Assigned=false i
+		for (( i = 0 ; i < ${#TagLst[@]} ; i++ )); do
+			Tags=${TagLst[$i]}
+			Tags=${Tags/|/ }
+			Var=${VarLst[$i]}
+			IsArg=${IsArgLst[$i]}
+
+			for Tag in $Tags; do
+				if [[ $Arg == -$Tag ]]; then
+					if $IsArg; then
+						Var=${Var%\?*}
+						debug -4 "Var: $Var = $Val"
+						eval "$Var=\"$Val\""
+						shift || true
+					else
+						debug -4 "Var: $Var = true"
+						eval "$Var=true"
+					fi
+					Assigned=true
+					break
+				fi
+			done
+
+			$Assigned && break
+		done
+		if ! $Assigned; then
+			echo "!> Invalid option: $Arg"
+			$PrintInfo && print_info -nohead -synopsis $FilterFunctionName
+			raise usrerr_invalid_option
+		fi
+	done
+
+	local ManVar
+	for (( i = 0 ; i < ${#ManVarLst[@]} ; i++ )); do
+		Arg=$1; shift || true
+		if [[ -n $Arg ]]; then
+			ManVar=${ManVarLst[$i]}
+			debug -4 "Var: $ManVar = $Arg"
+			eval "$ManVar=\"$Arg\""
+		else
+			echo "!> Argument missing!"
+			$PrintInfo && print_info -nohead -synopsis $FilterFunctionName
+			terminate usrerr_argument_missing
+		fi
+	done
+
+	if $ArgRest && [[ -n $1 ]]; then
+		debug -4 "Var: $ArgRestVar = $@"
+		eval "$ArgRestVar=\"$@\""
+		RET="$@" ## depreciated.
+	elif $ArgRest && [[ -z $1 ]]; then
+		if $ArgRestDef; then
+			debug -4 "Var: $ArgRestVar = $ArgRestDefVal"
+			eval "$ArgRestVar=\"$ArgRestDefVal\""
+		else
+			echo "!> Argument missing!"
+			$PrintInfo && print_info -nohead -synopsis $FilterFunctionName
+			terminate usrerr_argument_missing
+		fi
+	elif ! $ArgRest && [[ -n $1 ]]; then
+		echo "!> Too many arguments!"
+		$PrintInfo && print_info -nohead -synopsis $FilterFunctionName
+		terminate usrerr_too_many_arguments
+	fi
+}
+
+# -----[ COMMAND OPTIONS ]-----------------------------------------------------
+
+cmdo2() {
+	local Cmd=${1:?}; shift
+
+	if [[ $Cmd == run ]]; then
+		local SubCmd=$1
+		if [[ -n $SubCmd ]]; then
+			shift
+		else
+			SubCmd=null
+		fi
+
+		LIB_Commands+='help+info+?+null->print_info'
+
+		local LibCmd CmdAliases CmdFunction
+		for LibCmd in $LIB_Commands; do
+			CmdAliases="+${LibCmd%->*}+"
+			if [[ $CmdAliases == *"+$SubCmd+"* ]]; then
+				CmdFunction=${LibCmd#*->}
+				$CmdFunction "$@"
+
+				return
+			fi
+		done
+
+		if ! ${LIB_PluginsLoaded:-false}; then
+			local PluginsDir=$(dirname ${BASH_SOURCE[1]})/plugins
+			if [[ -d $PluginsDir ]]; then
+				unset LIB_Commands
+				local Plugin Plugins=$(find $PluginsDir -type f -perm +111)
+				for Plugin in $Plugins; do
+					import $Plugin
+				done
+				LIB_PluginsLoaded=true
+
+				cmdo2 run $SubCmd "$@"
+			fi
+		else
+			raise usrerr_invalid_command "No valid command specified, run 'glo help'"
+			# raise usrerr_invalid_command
+		fi
+	else
+		LIB_Commands+="$Cmd "
+	fi
+}
+
+# cmdo() {
+# 	local Synopsis=${1:?}; shift
+# 	# debug -4 "CmdSynopsis: $Synopsis"
+
+# 	local ArgDbgList=$(std.arg_separator "$@")
+# 	debug -1 "${FUNCNAME[1]}: [$ArgDbgList]"
+
+# 	local Executed CmdSynopsis
+# 	for CmdSynopsis in $Synopsis; do
+# 		cmdo.executer $CmdSynopsis "$@"; Executed=$RET
+# 		if $Executed; then
+# 			break
+# 		fi
+# 	done
+# }
+
+# cmdo.executer() {
+# 	local CmdSynopsis=${1:?}
+# 	local Arg="$2"
+# 	shift 2 || true
+
+# 	# debug -4 "CmdSubSynopsis: $CmdSynopsis -- $Arg $@"
+# 	# echo "CmdSubSynopsis: $CmdSynopsis -- $Arg $@"
+
+# 	local ExeCmd AliasList ExeSynopsis ExeOnMatch
+
+# 	if [[ $CmdSynopsis != *:* ]]; then
+# 		ExeCmd=true
+# 		AliasList=${CmdSynopsis%%->*}
+# 		ExeSynopsis=${CmdSynopsis#*->}
+# 		ExeOnMatch=${ExeSynopsis%&*}
+# 	else
+# 		ExeCmd=false
+# 		AliasList=${CmdSynopsis%%:*}
+# 		CmdSynopsis=${CmdSynopsis#*:}
+# 	fi
+
+# 	local Aliases=(${AliasList//|/ })
+
+# 	local Alias Cmd
+# 	for Alias in ${Aliases[@]}; do
+# 		if [[ "$Arg" == "$Alias" ]]; then
+# 			if $ExeCmd; then
+# 				Cmd=${ExeOnMatch//%/$Alias}
+# 				# ArgDbgList=$(std.arg_separator "$@")
+# 				# debug -4 "cmdexe: $Cmd [$ArgDbgList]"
+# 				$Cmd "$@"
+# 			else
+# 				cmdo.executer $CmdSynopsis "$@"
+# 			fi
+# 			RET=true; return
+# 		fi
+# 	done
+
+# 	local ExeElse
+# 	if $ExeCmd && [[ $ExeSynopsis == *\&* ]]; then
+# 		ExeElse=${ExeSynopsis#*&}
+# 		Cmd=${ExeElse//%/$Arg}
+# 		ArgDbgList=$(std.arg_separator $Arg "$@")
+# 		debug -4 "cmdexe else: $Cmd [$ArgDbgList]"
+# 		$Cmd "$Arg" "$@"
+# 		RET=true; return
+# 	elif [[ $Alias == \& ]]; then
+# 		ArgDbgList=$(std.arg_separator $Arg "$@")
+# 		debug -4 "cmdexe other: $ExeOnMatch [$ArgDbgList]"
+# 		$ExeOnMatch "$Arg" "$@"
+# 		RET=true; return
+# 	fi
+
+# 	RET=false; return
+# }
+
+# -----[ FUNCTIONS ]-----------------------------------------------------------
+
+# [debug]
+std.arg_separator() {
+	if [[ -n $1 ]]; then
+		echo -n $1; shift
+		while [[ -n $1 ]]; do
+			echo -n "|$1"
+			shift
+		done
+	fi
+}
+
+ift() {
+	if ${1:?}; then
+		echo "${2:?}"
+	fi
+}
+
+iff() {
+	if ! ${1:?}; then
+		echo "${2:?}"
+	fi
+}
+
+# -----[ TRY CATCH ]-----------------------------------------------------------
+
+# declare -i __STDTryIndex=0
+
+# try() {
+# 	local Command=${@:?}
+
+# 	debug -3 "try: $Command"
+# 	# echo "try: $Command"
+
+# 	std.reset_exception
+
+# 	__STDTryIndex+=1
+# 	$Command  # command continues after error is handled before catch runs
+
+# 	# $Command &  # subshell, no comms to parent shell, catch dont get the err code
+# 	# wait $!		# if catch runs from handler it will have the context - but still comms problem (shm solution ??)
+
+# 	# while :; do # works great if you dont use loops within a try clause
+# 	# 	$Command
+# 	# 	break
+# 	# done
+
+# 	__STDTryIndex+=-1
+# }
+
+# catch() {
+# 	local ErrorCode=$?
+# 	local Command=$@
+
+# 	if [[ ${__STDErrorCode:-0} != 0 ]]; then
+# 		ErrorCode=$__STDErrorCode
+# 	fi
+
+# 	debug -3 "catch: $ErrorCode ${__STDExceptionType}"
+# 	echo "catch: $ErrorCode ${__STDErrorCode} ${__STDExceptionType}"
+
+# 	if [[ $ErrorCode != 0 && -n $Command ]]; then
+# 		$Command $__STDErrorCode
+# 	fi
+
+# 	if [[ $ErrorCode == 130 ]] && ${__STDTerminateOnSig:-true}; then
+# 		terminate interrupted
+# 	fi
+
+# 	# done in handle_error - check if necessary
+# 	# if in handle_error it will kill comms to catch
+# 	std.reset_exception
+
+# 	RET=$ErrorCode
+# }
+
+raise() {
+	__STDExceptionType=${1:-gen_exception}
+	__STDExceptionMessage=$2
+
+# echo "raised ${__STDExceptionType}"
+	false
+}
+
+std.reset_exception() {
+	unset __STDErrorCode
+	unset __STDExceptionType
+	unset __STDExceptionMessage
+}
+
+# -----[ ERROR AND SIG HANDLERS ]----------------------------------------------
+
+set -o errtrace
+trap 'std.handle_error $? $BASH_COMMAND' ERR
+std.handle_error() {
+	local ErrorCode=$1; shift || true
+	local CmdLine=$@
+
+	__STDErrorCode=$ErrorCode
+	local RaisedFlag=false
+	if [[ -n ${__STDExceptionType} ]]; then
+		RaisedFlag=true
+	else
+		__STDExceptionType=code${ErrorCode}_exception
+	fi
+
+	debug -3 "exception: ${__STDExceptionType} ${__STDErrorCode}"
+	# echo "exception: ${__STDExceptionType} ${__STDErrorCode} ($CmdLine)"
+
+	local ExceptionHeader="Unhandled EXCEPTION (${__STDExceptionType})"
+	if ! $RaisedFlag; then
+		ExceptionHeader+=" at: $CmdLine"
+	fi
+	if ${__STDDebugMode:-false} || [[ -z ${__STDExceptionMessage} ]]; then
+		if [[ -n ${__STDExceptionMessage} ]]; then
+			ExceptionHeader=${ExceptionHeader}$'\n'${__STDExceptionMessage}
+		fi
+		io.print_stacktrace_pretty "$ExceptionHeader"
+	else
+		print -e "${__STDExceptionMessage}"
+	fi
+
+	if ${__STDTerminateOnError:-true}; then
+		__STDExitStatus=${__STDExitStatus:-exception}
+		terminate ${__STDExceptionType}
+	else
+		std.reset_exception
+	fi
+}
+
+trap 'std.handle_sig' INT
+std.handle_sig() {
+	debug -3 "signal: int"
+
+	if ${__STDTerminateOnSig:-true}; then
+		__STDExitStatus=${__STDExitStatus:-interrupted}
+		terminate interrupted
+	fi
+}
+
+# -----[ TERMINATE ]-----------------------------------------------------------
+
+terminate() {
+	local TerminationArg=${1:-ok}
+	local ExitCode=0
+
+	if [[ $TerminationArg =~ ^[0-9]+$ ]]; then
+		ExitCode=$TerminationArg
+	else
+		case $TerminationArg in
+			ok*)     ExitCode=0  ;;
+			prem*)   ExitCode=0  ;;
+			usrerr*) ExitCode=20 ;;
+			usrabr*) ExitCode=25 ;;
+			syserr*) ExitCode=30 ;;
+			enverr*) ExitCode=40 ;;
+			unxerr*) ExitCode=90 ;;
+			*)       ExitCode=99 ;;
+		esac
+	fi
+
+# echo -en "\033[31m"; echo "!> Terminated: $TerminationArg"; echo -en "\033[0m"
+
+	__STDExitStatus=${__STDExitStatus:-terminated}
+	exit $ExitCode
+}
+
+trap 'std.handle_exit' EXIT
+std.handle_exit() {
+	debug -3 "exit: ${__STDExitStatus:-none}"
+
+	if [[ -z ${__STDExitStatus} ]]; then
+		echo
+		io.print_stacktrace_pretty "Dead, dead, dead! Forced Exit"
+	fi
+}
+
+# -----[ MAIN ]----------------------------------------------------------------
+
+# =============================================================================

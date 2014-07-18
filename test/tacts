@@ -1,0 +1,104 @@
+#!/bin/bash
+
+# =====[ GLO TEST ACTIONS ]====================================================
+#
+#	Written by Francois Joubert
+#	Nov 2013
+#
+# =============================================================================
+
+# -----[ TEST FUNCTIONS ]------------------------------------------------------
+
+tacts.new_task() {
+	local Type=${1:-task}
+
+	tacts.unique_name $Type; local TaskName=$RET
+	echo "T> glo $Type $TaskName"
+	glo $Type $TaskName
+
+	RET=$TaskName
+}
+
+tacts.new_applied_task() {
+	local File=${1:-modules/system/file1}
+
+	tacts.new_task
+	tacts.new_commit $File
+	tacts.apply
+}
+
+tacts.new_commit() {
+	local Status=false
+	if [[ $1 == -st ]]; then
+		shift
+		Status=true
+	fi
+	local File=${1:-modules/system/file1}
+
+	tacts.do_work $File
+	if $Status; then
+		glo st
+	fi
+	tacts.commit
+}
+
+tacts.do_work() {
+	local File=${1:-modules/system/file1}
+	local Work=${2:-some code}
+
+	echo "T> Working..."
+	echo "$Work" >> $File
+}
+
+tacts.commit() {
+	echo "T> Committing..."
+	let GIT_COMMITTER_DATE+=86400; GIT_AUTHOR_DATE=$GIT_COMMITTER_DATE
+	glo ci $1 ${2:-Work}
+	# sleep 1.5
+}
+
+tacts.apply() {
+	echo "T> Applying..."
+	let GIT_COMMITTER_DATE+=86400; GIT_AUTHOR_DATE=$GIT_COMMITTER_DATE
+	glo apply $1
+	# sleep 1.5
+}
+
+tacts.dev_commit() {
+	glo co dev
+	tacts.do_work
+	echo "T> Committing..."
+	let GIT_COMMITTER_DATE+=86400; GIT_AUTHOR_DATE=$GIT_COMMITTER_DATE
+	glo ci -d 'Quick work'
+	# sleep 1.5
+}
+
+tacts.up() {
+	echo "T> Updateting from dev..."
+	let GIT_COMMITTER_DATE+=86400; GIT_AUTHOR_DATE=$GIT_COMMITTER_DATE
+	glo up
+}
+
+tacts.rel() {
+	echo "T> Releasing..."
+	let GIT_COMMITTER_DATE+=86400; GIT_AUTHOR_DATE=$GIT_COMMITTER_DATE
+	glo rel $1
+}
+
+# -----[ HELPER FUNCTIONS ]----------------------------------------------------
+
+tacts.unique_name() {
+	local Type=${1:-task}
+
+	if [[ -f $__SHTTESTDIR/__task_nr.i ]]; then
+		__TACTASKNR=$(< ${__SHTTESTDIR}/__task_nr.i)
+		let "__TACTASKNR++"
+	else
+		__TACTASKNR=1
+	fi
+	echo $__TACTASKNR > $__SHTTESTDIR/__task_nr.i
+
+	RET=$Type$__TACTASKNR
+}
+
+# =============================================================================

@@ -1,131 +1,157 @@
 #!/bin/bash
 
-# =====[ GLO CORE ]============================================================
+# =====[ LIB : GLO CORE ]======================================================
 #
-#	Written by Francois Joubert
-#	Sep 2013
+#   Written by Francois Joubert
+#   Sep 2013
 #
-#	This is the core of glo.
+#   This is the core of glo.
 #
 # =============================================================================
 
-lib glocore
+cmdo2 'init->glocore.init'
+cmdo2 'task+t->glocore.task'
+cmdo2 'feature+f->glocore.feature'
+cmdo2 'bug+b->glocore.bug'
+cmdo2 'hotfix+fix->glocore.hotfix'
+cmdo2 'st->glocore.st'
+cmdo2 'bak->glocore.bak'
+cmdo2 'up->glocore.up'
+cmdo2 'apply->glocore.apply'
+cmdo2 'end->glocore.end'
+cmdo2 'ls->glocore.ls'
+cmdo2 'log->glocore.log'
+cmdo2 'resolved+resolve->glocore.resolved'
+cmdo2 'for->glocore.for'
+cmdo2 'release+rel->glocore.release'
+cmdo2 'retrieve+ret+update->glocore.retrieve'
 
 # -----[ INIT ]----------------------------------------------------------------
 
 # [info-doc init]
-# {BLU}init [-task|t] <SystemName>
-#   Initializes the current directory as a glo repo.
+# {BLU}init [-task|t] [<SystemName>]
+#   Initializes the current directory as a glo repo. If <SystemName> is not specified, cwd is used.
 #   It creates the .glo dir and config, a starting version tag 0.1.0, and the dev branch.
-#   -t	Also creates a task branch to do system-setup.
-glo_init() {
-	argo "task|t:SetupTaskFlag !SystemName" "$@"
-
-	set -e
+#   -t  Also creates a task branch to do system-setup.
+glocore.init() {
+	argo2 task+t:SetupTaskFlag %SystemName?cwd -- "$@"; $ASSIGN
 
 	if [[ ! -d .git ]]; then
-		echo "!> This is not a git repo."
-		exit 1
+		print -i "Initializing as a git repo..."
+		xgit.init
 	fi
 
 	if [[ -d .glo ]]; then
-		echo "!> This repo is already initialized."
-		exit 1
+		print -i "This repo is already initialized."
+		terminate ok
 	fi
 
-	echo ">> Initializing glo repo..."
-	
+	print -i "Initializing glo repo..."
+
 	mkdir .glo
-	echo "{system_name, $SystemName}." > .glo/config
+	if [[ $SystemName == "cwd" ]]; then
+		local wd=$(pwd)
+		SystemName=${wd##*/}
+	fi
+	echo -e "(config:glo, version:3)::{\n\tsystem: {\n\t\tname: $SystemName\n\t}\n}" > .glo/config
 
-	git add .
-	git commit -am 'Initial commit'
-	
-	echo ">> Tagging as version '0.1.0'..."
-	git_tag "0.1.0"
-	git_push master
+	xgit.add_all
+	xgit.commit 'Initialized glo'
 
-	echo ">> Pushing dev to origin..."
-	git_branch dev
-	git_push dev
+	print -i "Tagging as version '0.1.0'..."
+	xgit.tag "0.1.0"
+
+	xgit.branch dev
+
+	if [[ -n $(git remote) ]]; then
+		print -i "Pushing to origin..."
+		xgit.push master dev
+	fi
 
 	if $SetupTaskFlag; then
-		echo ">> Creating setup task..."
-		glo task system-setup
+		print -i "Creating setup task..."
+		glocore.task system-setup
 	fi
 
-	echo ">> Repo initialized."
+	print -i "Repo initialized."
 }
 
 # -----[ TASK ]----------------------------------------------------------------
 
 # [info-doc task]
-# {BLU}task [-force|f] [-noup|n] [-type|t <Type> (task)] <TaskName>
+# {BLU}task [-rename|n] [-force|f] [-updev|u] [-source|s <Source> (dev)] [-type|t <Type> (task)] <TaskName>
 #   Creates a new Type/<TaskName> branch from the latest dev state.
 #   Uncommitted changes may be transfered to the task branch.
 #   Aliases: t
-#   -f	Overrides existing banch.
-#   -n	Skips dev update from origin before the task is created.
-#   -t	Specifies the type of task to create: task (default), feature, bug or hotfix.
-glo_task() {
-	argo "force|f:Override noup|n:NoUp type|t=TaskType?task @TaskName" "$@"
+#   -n  Renames the current branch. Option -f applies if new name exists.
+#   -f  Overrides existing banch.
+#   -u  Updates dev from origin before the task is created.
+#   -s  Specify task source as sha1 or 'this' for the current commit.
+#   -t  Specifies the type of task to create: task (default), feature, bug or hotfix.
+glocore.task() {
+	argo2 rename+n:Rename force+f:Override updev+u:UpDev source+s=TaskSource?dev type+t=TaskType?task %TaskName -- "$@"; $ASSIGN
+
+	if [[ -z $TaskName ]]; then
+		raise usrerr_bad_name "Task Name cannot be empty!"
+	fi
 
 	TaskName=${TaskName// /-}
-	TaskName=${TaskName//_/-}
 
-	if [[ ! ":task:feature:bug:hotfix:" == *$TaskType* ]]; then
-		echo "!> Invalid type $TaskType"
-		exit 1
+	if [[ ! ":task:feature:bug:" == *:$TaskType:* ]]; then
+		raise usrerr_bad_type "Invalid type $TaskType"
 	fi
 
-	if ! git_wd_clean && ! git_transfer; then
-		echo "!> Aborted."
-		exit 1
-	fi
-
-	if [[ $TaskType != "hotfix" ]]; then
-		if git_branch_exist $TaskType/$TaskName; then
-			if $Override; then 
-				git_branch_delete $TaskType/$TaskName
-				echo "!> Branch $TaskName overridden!"
+	if $Rename; then
+		if xgit.branch_exist $TaskType/$TaskName; then
+			if $Override; then
+				xgit.branch_delete $TaskType/$TaskName
 			else
-				prompt "The $TaskType $TaskName exists, would you like to check it out?" !yes:continue abort:exit1
-
-				echo ">> Checking out $TaskType $TaskName..."
-				git_checkout $TaskType/$TaskName
-				# BranchDate not definitive
-				# if git_branch_isnewer dev; then
-				# 	echo ">> This $TaskType is out of date - run 'glo up'"
-				# fi
-				
-				git_transfer_apply
-	
-				exit 0
+				prompt "The $TaskType $TaskName exists, would you like to override it?" yes:continue !abort:abort
+				xgit.branch_delete $TaskType/$TaskName
 			fi
 		fi
+		xgit.branch_rename $TaskType/$TaskName
 
-		git_checkout dev
-		if ! $NoUp; then
-			git_pull dev
-		else
-			echo "!> Not updating dev - you may not have the latest changes."
-		fi
-	else
-		BaseVersion=$TaskName
-		if git_tag_exist $BaseVersion; then
-			git_checkout $BaseVersion
-			git_version_bump $BaseVersion x.x.+; TaskName=$RET # todo: may only create hotfix on latest minor version
-		else
-			echo "!> Invalid version $BaseVersion."
-			exit 1
+		return
+	fi
+
+	if [[ $TaskSource != this ]]; then
+		xgit.get_branch_type; local CurrentBranchType=$TYPE
+		if [[ $CurrentBranchType == dev ]]; then
+			if $UpDev; then
+				print -i -n "Updating dev before creating task..."
+				xgit.fetch
+				xgit.ff_branch dev
+			fi
+			TaskSource=this
+		elif xgit.is_wd_dirty; then
+			xgit.transfer
 		fi
 	fi
 
-	if git_branch $TaskType/$TaskName; then
-		echo ">> Branch $TaskType $TaskName created."
+	if xgit.branch_exist $TaskType/$TaskName; then
+		if $Override; then
+			xgit.branch_delete $TaskType/$TaskName
+			print -i "Branch $TaskName overridden!"
+		else
+			prompt "The $TaskType $TaskName exists, would you like to check it out?" !yes:continue abort:abort
+
+			print -i "Checking out $TaskType $TaskName..."
+			xgit.checkout $TaskType/$TaskName
+			xgit.transfer_apply
+
+			return
+		fi
 	fi
 
-	git_transfer_apply
+	if [[ $TaskSource != this ]]; then
+		xgit.checkout $TaskSource
+	fi
+
+	xgit.branch $TaskType/$TaskName
+	print -i "Created $TaskType $TaskName."
+
+	xgit.transfer_apply
 }
 
 # -----[ FEATURE ]-------------------------------------------------------------
@@ -135,10 +161,10 @@ glo_task() {
 #   Creates a new task of type 'feature' with name <FeatureName>.
 #   Uncommitted changes may be transfered to the task branch.
 #   Aliases: f
-glo_feature() {
-	argo "@Args" "$@" # todo: problems with options in argo
+glocore.feature() {
+	argo2 ---
 
-	glo_task -type feature "$Args"
+	glocore.task -type feature $@
 }
 
 # -----[ BUG ]-----------------------------------------------------------------
@@ -148,10 +174,10 @@ glo_feature() {
 #   Creates a new task of type 'bug' with name <BugName>.
 #   Uncommitted changes may be transfered to the task branch.
 #   Aliases: b
-glo_bug() {
-	argo "@Args" "$@"
+glocore.bug() {
+	argo2 ---
 
-	glo_task -type bug "$Args"
+	glocore.task -type bug $@
 }
 
 # -----[ HOTFIX ]--------------------------------------------------------------
@@ -162,12 +188,19 @@ glo_bug() {
 #   With versioning 'Maj.Min.Fix', the 'Fix' number is incremented and used as the hotfix branch name.
 #   Uncommitted changes may be transfered to the hotfix branch.
 #   Aliases: fix
-glo_hotfix() {
-	argo "!InputVersion" "$@"
+glocore.hotfix() {
+	argo2 InputVersion -- "$@"; $ASSIGN
 
-	git_version_check $InputVersion; CheckedVersion=$RET
-	
-	glo_task -type hotfix $CheckedVersion
+	xgit.is_version_valid $InputVersion; CheckedVersion=$RET
+
+	# glocore.task -type hotfix $CheckedVersion
+	local BaseVersion=$TaskName
+	if xgit.tag_exist $BaseVersion; then
+		xgit.checkout $BaseVersion # todo: if bumped version also exist... (baseversion must be latest fix)
+		xgit.version_bump $BaseVersion x.x.+; TaskName=$RET
+	else
+		raise usrerr_bad_baseversion "Invalid version $BaseVersion."
+	fi
 }
 
 # -----[ ST ]------------------------------------------------------------------
@@ -175,278 +208,274 @@ glo_hotfix() {
 # [info-doc st]
 # {BLU}st
 #   Displays modification status on main and all deps.
-glo_st() {
-	argo -- "$@"
+glocore.st() {
+	argo2 -- "$@"
+
+	local WorkingDir=$(pwd)
+
+	gloutils.check_repo
 
 	st_delegate() {
-		delRepoName=$1
-		delWorkingDir=$2
+		local ModuleName=${1:?}
 
-		unset RET
-		delGitSt=$(git status --porcelain)
-		if [[ $delGitSt == "" ]]; then
-			RET=">> No modifications.\n"
-			return 1
+		local GitSt=$(git status --porcelain)
+		if [[ -z $GitSt && $ModuleName == main ]]; then
+			xgit.repo_header
+			print -i "No modifications."
+		elif [[ -n $GitSt ]]; then
+			xgit.repo_header
+
+			local CurrentDir=$(pwd) Line
+			_IFS=$IFS; IFS=$'\n'
+			for Line in $GitSt; do
+				local Status=${Line:0:2}
+				local File="$CurrentDir/${Line:3}"
+				File="${File#$WorkingDir/}"
+				print "$Status $File"
+			done
+			IFS=$_IFS
 		fi
-		
-		delGitSt=${delGitSt// /-}
-		delGitSt=${delGitSt//$'\n'/ }
-		for delLine in $delGitSt; do
-			delStatus=${delLine:0:2}
-			delStatus=${delStatus//-/ }
-			delFile="$(pwd)/${delLine:3}"
-			delFile="${delFile#$delWorkingDir/}"
-			RET="$RET$delStatus $delFile\n"
-		done
 	}
 
-	WorkingDir=$(pwd)
-	goto_parent_dir '[[ -d .git ]]'
-
-	foreach_subrepo st_delegate $WorkingDir
+	st_delegate main
+	xgit.foreach st_delegate
 }
 
 # -----[ UP ]------------------------------------------------------------------
 
 # [info-doc up]
 # {BLU}up
-#   Updates the current task branch from the latest state in dev. 
+#   Updates the current task branch from the latest state in dev.
 #   The dev branch is updated from origin before it is merged into the task branch.
-glo_up() {
-	argo -- "$@"
+glocore.up() {
+	argo2 -- "$@"
 
-	git_branch_gettype; TaskType=$TYPE; TaskName=$NAME
+	xgit.get_branch_type; TaskType=$TYPE; TaskName=$NAME
 
 	if [[ $TaskType == "dev" ]]; then
-		echo "!> You are not on a task branch, to updated the entire system, run 'glo update'."
-		exit 1
+		raise enverr_bad_branch "You are not on a task branch, to updated the entire system, run 'glo retrieve'."
 	fi
 
-	if ! git_wd_clean; then
-		echo "!> Uncommitted changes detected - cannot update $TaskType."
-		exit 1
+	if xgit.is_wd_dirty; then
+		raise enverr_bad_wd "Uncommitted changes detected - commit first before updating."
 	fi
 
-	git_checkout dev
-	if ! git_pull dev; then
-		git merge --abort
-		echo "!> Merge aborted, please run 'glo update' and fix dev merge conflicts."
-		exit 1
-	fi
+	print -i -n "Updating repo: "
+	xgit.fetch
+	xgit.ff_branch dev
 
-	git_checkout $TaskType/$TaskName
-	# if git_branch_isnewer dev; then # this incorrectly determine if the br needs update
-		if git_merge dev "Updated $TaskType $TaskName from dev"; then
-			echo ">> Branch $TaskType $TaskName updated with latest changes."
-		else
-			echo "!> Conflicts occured during merge. Please fix the mess... then run 'glo messfixed' :)"
-		fi
-	# else
-	# 	echo ">> Branch $TaskType already up to date."
-	# fi
+	xgit.merge dev "Updated $TaskType $TaskName from dev"
+	if $SUCCESS && [[ $RET == *"up-to-date"* ]]; then
+		print -i "Branch $TaskType $TaskName is already up to date."
+	elif $SUCCESS; then
+		print -i "Branch $TaskType $TaskName updated with latest changes."
+	elif xgit.has_conflict; then
+		raise enverr_git_merge_conflicted "Conflicts occured during update. After resolving the conflicts, run 'glo resolved'"
+	else
+		raise enverr_git_merge_failed "Merge failed."
+	fi
 }
 
 # -----[ BAK ]-----------------------------------------------------------------
 
 # [info-doc bak]
 # {BLU}bak
-#   Backs up all unmerged tasks to origin. The remote branch is prefixed with your username 
+#   Backs up all unmerged tasks to origin. The remote branch is prefixed with your username
 #   to avoid name conflicts.
-glo_bak() {
-	argo -- "$@"
+glocore.bak() {
+	argo2 -- "$@"
 
-	if ! git_wd_clean; then
-		# todo: prompt for WIP
-		echo "!> Uncommitted changes detected - are you sure you would like to backup without committing?"
-	fi
+	utils.rdc user.username; local Username=$RET
+	# local Username=$(rdc landobyte username)
 
-	UnmergedBranches=$(git branch --no-merged dev | grep -v master)
-	UnmergedBranches=${UnmergedBranches/\*/}
-	debug -2 "UnmergedBranches $UnmergedBranches"
+	bak_delegate() {
+		local BranchPushList=""
+		local WdDirty=false OnDev=false
 
-	if [[ -z $UnmergedBranches ]]; then
-		echo ">> All tasks are up to date."
-		exit 0
-	fi
+		xgit.repo_header
 
-	unset BranchPushList
-	for BranchName in $UnmergedBranches; do
-		LocalBranchName=$BranchName
-		RemoteBranchName=$GLO_USERNAME/$BranchName
+		if xgit.is_wd_dirty untracked=true; then
+			WdDirty=true
+			if xgit.is_branch_type dev; then
+				OnDev=true
+				local Sse=$(date +"%s")
+				glocore.task -force tmp-$Sse > /dev/null
+			fi
+			glogit.wip > /dev/null
+		fi
 
-		debug -2 "LocalBranchName $LocalBranchName; RemoteBranchName $RemoteBranchName"
-	
-		if ! git_branch_exist origin/$RemoteBranchName || git_branch_isnewer $BranchName origin/$RemoteBranchName; then
-			echo ">> Branch $BranchName has new commits."
-			BranchPushList="$BranchPushList$LocalBranchName:$RemoteBranchName "
+		local UnmergedBranches=$(git branch --no-merged dev | grep -v master || true)
+		UnmergedBranches=${UnmergedBranches/\*/}
+		debug -2 "UnmergedBranches $UnmergedBranches"
+
+		if [[ -z $UnmergedBranches ]]; then
+			print -i "No unmerged task found."
 		else
-			echo ">> Branch $BranchName is backed up."
-		fi
-	done
+			for BranchName in $UnmergedBranches; do
+				local LocalBranchName=$BranchName
+				local RemoteBranchName=$Username/$BranchName
 
-	if [[ -n $BranchPushList ]]; then
-		echo ">> Backing up..."
-		if git_push "$BranchPushList"; then
-			echo ">> Success."
+				debug -2 "LocalBranchName $LocalBranchName; RemoteBranchName $RemoteBranchName"
+
+				if ! xgit.branch_exist origin/$RemoteBranchName || xgit.is_branch_newer $BranchName origin/$RemoteBranchName; then
+					BranchPushList+="$LocalBranchName:$RemoteBranchName "
+				fi
+			done
+
+			if [[ -z $BranchPushList ]]; then
+				print -i "All tasks are backed up."
+			else
+				print -i "Backing up..."
+				if xgit.push force=true $BranchPushList; then
+					print -c s "Success."
+				fi
+			fi
 		fi
-	fi
+
+		if $WdDirty; then
+			glogit.unwip > /dev/null
+			if $OnDev; then
+				glogit.co dev > /dev/null
+			fi
+		fi
+
+	}
+
+	bak_delegate main
+	xgit.foreach bak_delegate
 }
 
 # -----[ APPLY ]---------------------------------------------------------------
 
-# [info-doc apply]
-# {BLU}apply [-noup|n] [-delete|d]
-#   The current task branch is merged into dev. All changes must be commited.
-#   -n	Skips dev update from origin before the task is applied.
-#   -d	Deletes the task branch after it is merged into dev.
-glo_apply() {
-	argo "noup|n:NoUp delete|d:DeleteBranch" "$@"
+# todo: apply a hotfix to some other version specified
+# argo2 version+v=ApplyToVersion "$@"
 
-	git_branch_gettype; TaskType=$TYPE; TaskName=$NAME
+# [info-doc apply]
+# {BLU}apply [-stay|s] [-delete|d]
+#   The current task branch is merged into dev. All changes must be commited.
+#   -s  Stay on the current task branch.
+#   -d  Deletes the task branch after it is merged into dev. Ignored with -s
+glocore.apply() {
+	argo2 stay+s:StayOnTask delete+d:DeleteBranch -- "$@"; $ASSIGN
+
+	xgit.get_branch_type; TaskType=$TYPE; TaskName=$NAME
 
 	if [[ $TaskType == "dev" ]]; then
-		echo "!> This is not a task branch - nothing to apply."
-		exit 1
+		raise enverr_bad_branch "This is not a task branch - nothing to apply."
 	fi
 
-	if ! git_wd_clean; then
-		prompt "Uncommitted changes detected - would you like to stash you changes?" yes:continue !abort:exit1
-		git_stash
+	if xgit.is_wd_dirty; then
+		prompt "Uncommitted changes detected - would you like to stash it?" yes:continue !abort:abort
+		xgit.stash
 	fi
-	
-	git_checkout dev
 
-	if ! $NoUp; then
-		if ! git_pull dev; then
-			echo "!> Branch dev could not be updated - use the '-noup' flag to skip updating dev as a workaround."
-			git_checkout $TaskType/$TaskName
-			exit 1
-		fi
-	else
-		echo "!> Not updating dev - Warning: Merge conflicts is more likely to occur when dev is merged later."
+	xgit.checkout dev
+
+	print -i -n "Updating repo: "
+	xgit.fetch
+	xgit.ff_branch dev
+
+	local Partial=""
+	if $StayOnTask; then
+		Partial="partial "
 	fi
-	
+
 	case $TaskType in
-		feature) TaskApplyMessage="Added feature $TaskName" ;;
-		bug)     TaskApplyMessage="Fixed bug $TaskName" ;;
+		feature) TaskApplyMessage="Added ${Partial}feature $TaskName" ;;
+		bug)     TaskApplyMessage="Fixed ${Partial}bug $TaskName" ;;
 		hotfix)  TaskApplyMessage="Applied hotfix $TaskName" ;;
-		*)       TaskApplyMessage="Completed task $TaskName" ;;
+		*)       TaskApplyMessage="Completed ${Partial}task $TaskName" ;;
 	esac
 
-	if ! git_merge $TaskType/$TaskName "$TaskApplyMessage"; then
-		echo "!> Conflicts occured during merge. Please fix the mess... then run 'glo messfixed' :)"
-		echo ">> You could also abort the merge with 'git merge --abort' and try to update from within the $TaskType."
-		exit 1
-	fi
-	
-	unset BackupBranch
-	if git_branch_exist origin/$GLO_USERNAME/$TaskType/$TaskName; then
-		BackupBranch=":$GLO_USERNAME/$TaskType/$TaskName"
+	xgit.merge $TaskType/$TaskName "$TaskApplyMessage"
+	if $SUCCESS; then
+		print -i "Branch $TaskType $TaskName applied to dev."
+	elif xgit.has_conflict; then
+		print -e "Conflicts occured during apply!"
+		prompt "Would you like to continue to resolve the conflicts or abort the merge?" yes:false !abort-merge:true; local DoAbortMerge=$RET
+		if $DoAbortMerge; then
+			xgit.merge_abort
+			print -i "Merge aborted. Try to update your task from dev and resolve it from there."
+		fi
+		terminate enverr_git_merge_conflicted
+	else
+		raise enverr_git_merge_failed
 	fi
 
-	if ! git_push dev $BackupBranch; then
-		exit 1
+	utils.rdc user.username; local Username=$RET
+	# local Username=$(rdc landobyte username)
+	local DeleteBackupBranch
+	if xgit.branch_exist origin/$Username/$TaskType/$TaskName; then
+		# If a backup branch exist, remove it - because it is now merged into dev
+		DeleteBackupBranch=":$Username/$TaskType/$TaskName"
 	fi
 
-	if $DeleteBranch; then
-		echo "!> Deleting $TaskType branch..."
-		git_branch_delete $TaskType/$TaskName
+	xgit.push dev $DeleteBackupBranch
+
+	if $StayOnTask; then
+		xgit.checkout $TaskType/$TaskName
+	elif $DeleteBranch; then
+		xgit.branch_delete $TaskType/$TaskName
+		print -i "Deleted $TaskType branch."
 	fi
 }
 
 # [info-doc end]
 # {BLU}end
 #   Synonym for 'glo apply -delete'
-glo_end() { 
-	argo -- "$@"	
+glocore.end() {
+	argo2 -- "$@"
 
-	glo_apply -delete
+	glocore.apply -delete
 }
 
 # -----[ LS ]------------------------------------------------------------------
 
 # [info-doc ls]
 # {BLU}ls [-all|a]
-#   Lists unmerged tasks. 
+#   Lists unmerged tasks.
 #   Note: New task branches needs at least one commit to be labeled as unmerged.
-#   -a	Displays all tasks.
-glo_ls() {
-	argo "all|a:All" "$@"
-	
+#   -a  Displays all tasks.
+glocore.ls() {
+	argo2 all+a:All -- "$@"; $ASSIGN
+
 	ls_delegate() {
-		delRepoName=$1
+		local ModuleName=${1:?}
 
+		local Tasks UnmergedTasks
 		if $All; then
-			delTasks=$(git branch | grep -v master | grep -v dev)
-			delUnmergedTasks=$(git branch --no-merged dev | grep -v master)
+			Tasks=$(git branch | grep -v master | grep -v dev || true)
+			UnmergedTasks=$(git branch --no-merged dev | grep -v master || true)
+			UnmergedTasks=${UnmergedTasks//$'\n'/:}
+			UnmergedTasks=:${UnmergedTasks// }:
 		else
-			delTasks=$(git branch --no-merged dev | grep -v master)
+			Tasks=$(git branch --no-merged dev | grep -v master || true)
 		fi
 
-		unset RET
-		if [[ -z $delTasks ]]; then
-			if $All; then
-				return 0
-			else
-				RET=">> No unmerged tasks.\n"
-				return 1
-			fi
+		if [[ -n $Tasks ]]; then
+			xgit.repo_header
+			Tasks=${Tasks/\* /->}
+			local Task
+			for Task in $Tasks; do
+				local Margin
+				if [[ $Task != -\>* ]]; then
+					Margin="  "
+				fi
+
+				if [[ "$UnmergedTasks" == *:$Task:* ]]; then
+					print -c red "$Margin$Task"
+				else
+					print "$Margin$Task"
+				fi
+			done
+		elif [[ $ModuleName == main ]]; then
+			xgit.repo_header
+			print -i "No unmerged tasks."
 		fi
-
-		delTasks=${delTasks/\* /->}
-		for delTask in $delTasks; do
-			unset delMargin
-			if [[ $delTask != -\>* ]]; then
-				delMargin="  "
-			fi
-
-			if [[ "$delUnmergedTasks" == *$delTask* ]]; then
-				RET="$RET$delMargin\033[31m$delTask\033[0m\n"
-			else
-				RET="$RET$delMargin$delTask\n"
-			fi
-		done
 	}
 
-	foreach_subrepo ls_delegate
-}
-
-# -----[ UPDATE ]-----------------------------------------------------------------
-
-# [info-doc update]
-# {BLU}update
-#   Updates master and dev from origin. If deps.config exists deps is also updated.
-glo_update() {
-	argo -- "$@"
-
-	goto_parent_dir '[[ -d .glo ]]'
-
-	git_branch_gettype; TaskType=$TYPE; TaskName=$NAME
-
-	# stash and pop rather...
-	if ! git_wd_clean; then
-		echo "!> Uncommitted changes detected - cannot update."
-		exit 1
-	fi
-
-	git_checkout master
-	git_pull master
-
-	git_checkout dev
-	if ! git_pull dev; then
-		echo "!> Your dev branch diverged from dev on origin. Please fix the conflicts and run 'glo resolve', then 'glo update' again."
-		exit 1
-	fi
-	
-	if [[ -f deps.config ]]; then 
-		deps up
-	fi
-
-	if [[ $TaskType != "dev" ]]; then
-		git_checkout $TaskType/$TaskName
-	fi
-	
-	echo ">> System updated."
+	ls_delegate main
+	xgit.foreach ls_delegate
 }
 
 # -----[ LOG ]-----------------------------------------------------------------
@@ -454,26 +483,27 @@ glo_update() {
 # [info-doc log]
 # {BLU}log [<StopVersion>]
 #   Displays a list of tasks applied to dev.
-glo_log() {
+glocore.log() {
+	argo2 ---
+
 	CurrentVersion="Dev"
 	NodeSha=$(git rev-parse dev)
 
 	PreviousVersion=$(git describe --tags --abbrev=0 master)
-	StopSha=$(git rev-parse "$PreviousVersion^2")
-	
+	StopSha=$(git rev-parse "$PreviousVersion^2" || true)
+
 	StopVersion=${1:-$PreviousVersion}
-	git_version_check $StopVersion; StopVersion=$RET
+	xgit.is_version_valid $StopVersion; StopVersion=$RET
 
 	while [[ $CurrentVersion != $StopVersion ]]; do
 		Header="-----[ $CurrentVersion ]------------------------------------------------------"
-		echo ${Header:0:60}
-		# echo "NodeSha: $NodeSha StopSha: $StopSha"
+		print ${Header:0:60}
 		while [[ $NodeSha != $StopSha ]]; do
 			CommitText=$(git show --no-patch --format="%s - %an" $NodeSha)
-			echo "$CommitText"
-	
+			print "$CommitText"
+
 			if ! NodeSha=$(git rev-parse $NodeSha^); then
-				return 1
+				return
 			fi
 		done
 		CurrentVersion=$PreviousVersion
@@ -482,84 +512,178 @@ glo_log() {
 	done
 }
 
+# -----[ FOR ]------------------------------------------------------------------
+
+# [info-doc for]
+# {BLU}for (<SubRepoList> | all) -- <Command(s)>
+#   Runs <Command> on <SubRepoList>.
+glocore.for() {
+	argo2 ---
+
+	local RepoList=":" Delegate
+	while [[ -n $1 && $1 != -do && $1 != -- ]]; do
+		RepoList+="$1:"; shift
+	done; shift
+	Command="$@"
+
+	for_delegate() {
+		local ModuleName=${1:?}
+
+		# dirty tag to list all dirty wd
+		if [[ $RepoList == *:$ModuleName:* || $RepoList == *:all:* ]]; then
+			xgit.repo_header
+			export IO_PrintIndent="  |"
+			$Command
+			IO_PrintIndent=""
+		fi
+	}
+
+	xgit.foreach for_delegate
+}
+
 # -----[ RELEASE ]-------------------------------------------------------------
 
 # [info-doc release]
-# {BLU}release [[-fix|x] | [-major|m]]
+# {BLU}release [-fix|x | -major|m]
 #   Merges the current dev state into master and tags it with the next version. All changes must be commited.
 #   With versioning 'Maj.Min.Fix', the 'Min' number is auto incremented.
 #   Aliases: rel
-#   -x	The 'Fix' number will be incremented instead.
-#   -m	The 'Maj' number will be incremented instead and 'Min' and 'Fix' reset to zero.
-glo_release() {
-	argo "fix|x:FixFlag major|m:MajorFlag" "$@"
+#   -x  The 'Fix' number will be incremented instead.
+#   -m  The 'Maj' number will be incremented instead and 'Min' and 'Fix' reset to zero.
+glocore.release() {
+	argo2 fix+x:FixFlag major+m:MajorFlag -- "$@"; $ASSIGN
 
-	if ! git_wd_clean; then
-		echo "!> Uncommitted changes detected - cannot create release."
-		exit 1
+	if xgit.is_wd_dirty; then
+		raise enverr_bad_wd "Uncommitted changes detected - cannot create release."
 	fi
 
-	git_checkout dev
-	git_pull dev
+	xgit.checkout master
 
-	if git_branch_isnewer master dev; then
-		prompt "?> No tasks were added since the last release, would you like to rebuild the current release?" yes:continue !abort:exit1
-		echo ">> Rebuilding... (comming soon)"
-		exit
+	print -i -n "Updating repo: "
+	xgit.fetch
+	xgit.ff_branch master
+	xgit.ff_branch dev
+
+	if xgit.is_branch_newer master dev; then
+		prompt "No commits were made since the last release, would you like to rebuild the current release?" yes:continue !abort:abort
+		glo package
+
+		terminate ok
 	fi
 
-	git_checkout master
-	git_pull master
-
-	git_version_current; Version=$RET
+	xgit.version_current; Version=$RET
 	if $MajorFlag; then
-		git_version_bump $Version +.0.0; NewVersion=$RET
+		xgit.version_bump $Version +.0.0; NewVersion=$RET
 	elif $FixFlag; then
-		git_version_bump $Version x.x.+; NewVersion=$RET
-	else	
-		git_version_bump $Version x.+.0; NewVersion=$RET
+		xgit.version_bump $Version x.x.+; NewVersion=$RET
+	else
+		xgit.version_bump $Version x.+.0; NewVersion=$RET
 	fi
 
-	if ! git_merge dev "Released $NewVersion"; then
-		echo "!> Oh dear! Conflicts on master... what did you do??"
-		exit 1
+	# todo: release merge state - for resolved
+	xgit.merge commit=false dev "Released $NewVersion"
+	if $SUCCESS; then
+		print -i "Branch dev released to master."
+	elif xgit.has_conflict; then
+		raise enverr_git_merge_conflicted "Oh dear! Conflicts on master... what did you do??"
+	else
+		raise enverr_git_merge_failed "Merge failed."
 	fi
 
-	git_tag $NewVersion
-	echo ">> Version $NewVersion created."
-	
-	git_push master
+	print -i "Creating snapshot of deps..."
+	gloconfig.deps.snapshot
 
-	git_checkout dev
+	git commit --no-edit > /dev/null
+
+	xgit.tag $NewVersion
+	print -i "Version $NewVersion created."
+
+	xgit.push master
+
+	xgit.checkout dev
 }
 
-# -----[ RESOLVE ]-------------------------------------------------------------
+# -----[ RESOLVED ]------------------------------------------------------------
 
-# [info-doc resolve]
-# {BLU}resolve
-#   Adds and commits files that were in conflict state after a merge.
-glo_resolve() {
-	argo -- "$@"
+# [info-doc resolved]
+# {BLU}resolved
+#   Adds and commits files that are in conflict state after a merge.
+glocore.resolved() {
+	argo2 -- "$@"
 
-	goto_parent_dir '[[ -d .git ]]'
+	local MergeAction
 
-	git_branch_gettype; TaskType=$TYPE
+	gloutils.check_repo
 
-	git add $(git diff --name-only --diff-filter=U)
-	git commit --no-edit
+	# todo: check if resolved is applicable
+	xgit.add $(git diff --name-only --diff-filter=U)
 
-	if [[ $TaskType == "dev" ]]; then
-		git_push dev
+	xgit.conflict_source clear=true; MergeAction=$RET
+	if [[ $MergeAction != transfer ]]; then
+		if [[ $MergeAction == dev_commit ]]; then
+			utils.get_state commit; local Message="$RET"
+			utils.get_state commit_flags; local Flags=$RET
+			local IndexOnlyFlag=false
+			if [[ $Flags == *":index:"* ]]; then
+				IndexOnlyFlag=true
+			fi
+			if [[ $Flags == *":amend:"* ]]; then
+				xgit.commit_amend index=$IndexOnlyFlag "$Message"
+			else
+				xgit.commit index=$IndexOnlyFlag "$Message"
+			fi
+		else
+			git commit --no-edit
+		fi
+
+		xgit.get_branch_type; TaskType=$TYPE
+		if [[ $TaskType == "dev" ]]; then
+			xgit.push dev
+		fi
 	fi
 }
 
-# -----[ VERSION ]-------------------------------------------------------------
+# -----[ RETRIEVE ]------------------------------------------------------------
 
-# [info-doc version]
-# {BLU}version
-#   Displays the current version of glo.
-glo_version() {
-	git_version_current; echo "Version $RET"
+# [info-doc retrieve]
+# {BLU}retrieve
+#   Updates master and dev from origin. If deps.config exists, deps is also updated.
+glocore.retrieve() {
+	argo2 -- "$@"
+
+	gloutils.check_repo
+
+	xgit.get_branch_type; TaskType=$TYPE; TaskName=$NAME
+
+	# if [[ $TaskType == master ]]; then
+	# 	raise usrerr_invalid_command "Please update from dev or a task."
+	# fi
+
+	if xgit.is_wd_dirty; then
+		prompt "Uncommitted changes detected - would you like to stash?" yes:continue !abort:abort
+		xgit.stash
+		print -i "Your work is stashed, run 'git stash pop' to retrieve it afterwards."
+	fi
+
+	print -i -n "Updating repo: "
+	xgit.fetch
+	xgit.ff_branch master
+	xgit.ff_branch dev
+
+	if xgit.has_conflict; then
+		raise enverr_git_merge_conflicted "Your dev branch diverged from dev on origin. Please fix the conflicts and run 'glo resolved', then 'glo retrieve' again."
+	fi
+
+	prompt "Whould you like to retrieve the deps?" !yes:true no:false; local Response=$RET
+	if $Response; then
+		gloconfig.deps.up
+	fi
+
+	if [[ $TaskType != "dev" ]]; then
+		xgit.checkout $TaskType/$TaskName
+	fi
+
+	print -i "System updated."
 }
 
 # =============================================================================

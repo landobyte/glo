@@ -1,0 +1,154 @@
+#!/bin/bash
+
+# =====[ GIT TEST ENVIRONMENT INITIALIZER ]====================================
+#
+#	Written by Francois Joubert
+#	Nov 2013
+#
+# =============================================================================
+
+# -----[ INIT ]----------------------------------------------------------------
+
+git_env_init.run() {
+	local SetupDir=$(pwd)
+
+	echo -e "\nCleaning..."
+	if [[ -d origin ]]; then
+		rm -rf origin
+	fi
+	if [[ -d tmp ]]; then
+		rm -rf tmp
+	fi
+	if [[ -d dev ]]; then
+		rm -rf dev
+	fi
+
+	echo -e "\nCreating Origin..."
+	mkdir origin; cd origin
+
+	echo -e "\nInitializing Origin repos..."
+	local User=$(whoami)
+	git_env_init.init_repo system
+
+	echo -e "\nInitializing Deps..."
+	git_env_init.init_repo dependency1
+	git_env_init.init_repo dependency2
+	git_env_init.init_repo dependency3
+	cd $SetupDir
+
+	echo -e "\nMaking Deps..."
+	local GitUrl="$User@localhost:$SetupDir/origin"
+	mkdir tmp; cd tmp
+	git_env_init.make_dep dependency1 $GitUrl
+	git_env_init.make_dep dependency2 $GitUrl
+	git_env_init.make_dep dependency3 $GitUrl
+	cd $SetupDir
+	rm -rf tmp
+
+	echo -e "\nSetting up local system..."
+	mkdir dev; cd dev
+	git_env_init.clone_and_make_sys system $GitUrl
+	cd ..
+
+	TEST_DepUrl=$GitUrl
+	SHT_GitUrl=$GitUrl
+	SHT_GitEnvInit=true
+
+	print -d
+	print -i -d "Environment init complete.\n"
+}
+
+git_env_init.init_repo() {
+	local RepoName=${1:?}.git
+	local OldPath=$(pwd)
+
+	mkdir $RepoName; cd $RepoName
+
+	git init --bare
+
+	cd $OldPath
+}
+
+git_env_init.clone_and_make_sys() {
+	local SysName=${1:?}
+	local RemoteUrl=${2:?}
+	local OldPath=$(pwd)
+
+	git clone $RemoteUrl/$SysName.git; cd $SysName
+
+	local SysPath=$(pwd)
+	git_env_init.sys_setup $SysName $RemoteUrl
+	cd $SysPath
+
+	git add --all
+	git commit -am 'System Setup'
+	git push origin master
+
+	cd $OldPath
+}
+
+git_env_init.sys_setup() {
+	local SysName=${1:?}
+	local RemoteUrl=${2:?}
+
+	echo "$(git_env_init.dep_gitignore)" > .gitignore
+	echo "!modules/$SysName" >> .gitignore
+
+	mkdir -p modules/$SysName; cd modules/$SysName
+	git_env_init.make_files
+}
+
+git_env_init.make_dep() {
+	local DepName=${1:?}
+	local RemoteUrl=${2:?}
+	local OldPath=$(pwd)
+
+	git clone $RemoteUrl/$DepName.git; cd $DepName
+
+	local SysPath=$(pwd)
+	git_env_init.make_files
+	cd $SysPath
+
+	git add --all
+	git commit -am 'Initial Commit'
+	git tag 1.0.0
+	git branch dev
+	git push --set-upstream origin master dev
+
+	cd $OldPath
+}
+
+git_env_init.make_files() {
+	echo Line001 > file1
+	echo Line001 > file2
+	echo Line001 > file3
+}
+
+git_env_init.dep_gitignore() {
+	echo "\
+# File extentions
+*.o
+*.beam
+*.plt
+*.dump
+*.conf
+*.elog
+*.log
+*.access
+*.app
+*~
+
+# File paternes
+Mnesia*
+Makefile
+
+# Directories
+.eunit
+deps
+lib
+support
+web_assets
+modules/*"
+}
+
+# =============================================================================

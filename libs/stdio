@@ -1,0 +1,379 @@
+#!/usr/bin/env bash
+
+# =====[ STANDARD LIB ]========================================================
+#
+# Written by Francois Joubert
+# Jul 2014
+#
+# =============================================================================
+
+# -----[ IO ]------------------------------------------------------------------
+
+print() {
+	local InfoFlag=false WarningFlag=false ErrorFlag=false PromtFlag=false
+	local FormatCode=rst ColorCode=null NoTerminateFlag=false
+	local NoNewLineFlag=false IgnoreIndentFlag=false
+	local ReturnFlag=false
+	local Text
+	while [[ -n $1 ]]; do
+		case $1 in
+			-i) InfoFlag=true ;;
+			-w) WarningFlag=true ;;
+			-e) ErrorFlag=true ;;
+			-p) PromtFlag=true ;;
+			-f) FormatCode=$2; shift ;;
+			-c) ColorCode=$2; shift ;;
+			-t) NoTerminateFlag=true ;;
+			-n) NoNewLineFlag=true ;;
+			-d) IgnoreIndentFlag=true ;;
+			-r) ReturnFlag=true ;;
+			*) Text="$@"; break ;;
+		esac
+		shift
+	done
+
+	Text=${Text//$'\n'/\\n}
+
+	local Indent="$IO_PrintIndent"
+	if [[ -z $Indent ]]; then
+		Indent="$IoGlobalIndent"
+	fi
+
+	if $IgnoreIndentFlag; then
+		Indent=""
+	fi
+
+	if $InfoFlag; then
+		Text="${Text//\\n/\\n$Indent   }"
+		Text="$Indent${IoColors_sky}>> ${Text}"
+	elif $WarningFlag; then
+		Text="${Text//\\n/\\n$Indent   }"
+		Text="$Indent${IoColors_brn}!> ${Text}"
+	elif $ErrorFlag; then
+		Text="${Text//\\n/\\n$Indent   }"
+		Text="$Indent${IoColors_red}x> ${Text}"
+	elif $PromtFlag; then
+		Text="${Text//\\n/\\n$Indent   }"
+		Text="$Indent${IoColors_org}?> ${Text}"
+	else
+		local FormatKey=IoFormats_$FormatCode
+		case $ColorCode in
+			i) ColorCode=sky ;;
+			w) ColorCode=brn ;;
+			e) ColorCode=red ;;
+			p) ColorCode=org ;;
+			s) ColorCode=grn ;;
+		esac
+		local ColorKey=IoColors_$ColorCode
+		Text="${Text//\\n/\\n$Indent}"
+		Text="${Indent}${!FormatKey}${!ColorKey}${Text}"
+	fi
+
+	if ! $NoTerminateFlag; then
+		Text="$Text${IoFormats_rst}"
+	fi
+
+	if $ReturnFlag; then
+		RET="$Text"
+	elif $NoNewLineFlag; then
+		echo -ne "$Text"
+	else
+		echo -e "$Text"
+	fi
+}
+
+# todo: promt-var is still global
+
+# prompt "Are you sure?" !yes:true no:false
+# ?> Are you sure? (yes no)
+
+# prompt "Name or abort:" Name:var !abort:abort; $ASSIGN
+# ?> Name or abort: (Name abort)
+prompt() {
+	local PromptText=${1:?}; shift
+	local Options=${@:?}
+
+	local OptionLabels
+	declare -A OptionActions
+	local HasVar=false OptionVarName
+	local DefaultOption
+	local OptionText
+
+	local Opt OptLabel OptAction OptText
+	for Opt in $Options; do
+		OptLabel=${Opt%:*}
+		OptAction=${Opt#*:}
+
+		if [[ $OptAction == var ]]; then
+			HasVar=true
+			OptionVarName=$OptLabel
+			OptText=$OptLabel
+		else
+			if [[ $OptLabel == !* ]]; then
+				OptLabel=${OptLabel#!}
+				DefaultOption=$OptLabel
+
+				print -f uln -d -r "${OptLabel:0:1}"; OptText="$RET"
+				print -f uln -c gry -d -r "${OptLabel:1}"; OptText+="$RET"
+			elif [[ $OptAction != var ]]; then
+				print -d -r "${OptLabel:0:1}"; OptText="$RET"
+				print -c gry -d -r "${OptLabel:1}"; OptText+="$RET"
+			fi
+
+			OptionLabels+="$OptLabel "
+			OptionActions[$OptLabel]=$OptAction
+		fi
+		OptionText+="$OptText "
+	done
+	OptionText="($OptionText\b): "
+
+	# echo $OptionLabels
+	# echo ${OptionActions[@]}
+	# echo $HasVar
+	# echo $DefaultOption
+
+	local -i RespondCount=0
+	local Response OriginalResponse
+	while [[ $RespondCount -lt 3 ]]; do
+		print -p -n "$PromptText "
+		print -d -n "$OptionText"
+
+		if ! ${__STDTestMode:-false} && ! ${IO_AutoRespondMode:-false}; then
+			read Response
+		elif [[ -n ${__STDPromptResponse} ]]; then #[DEPRICATED]
+			print -d "Auto Response: ${__STDPromptResponse}"
+			Response="${__STDPromptResponse}"
+		elif [[ -n $IO_PromptResponse ]]; then
+			Response="${IO_PromptResponse%%:*}"
+			print -d "Auto Response: $Response"
+			if [[ $IO_PromptResponse == *:* ]]; then
+				IO_PromptResponse=${IO_PromptResponse#*:}
+			else
+				IO_PromptResponse=""
+			fi
+		else
+			print -c e -d "Auto Response: ERROR"
+			raise syserr_bad_prompt_auto_response "IO_PromptResponse is not set."
+		fi
+
+		if [[ -z $Response ]]; then
+			Response=$DefaultOption
+		else
+			OriginalResponse="$Response"
+			Response=$(echo $Response | tr '[:upper:]' '[:lower:]')
+		fi
+
+		RespondCount+=1
+
+		local OptionLabel
+		for OptionLabel in $OptionLabels; do
+			if [[ $Response == $OptionLabel || $Response == ${OptionLabel:0:1} ]]; then
+				case ${OptionActions[$OptionLabel]} in
+					'continue') RET=true; return ;;
+					'true')     RET=true; return ;;
+					'false')    RET=false; return ;;
+					'abort')    raise abort "Aborted." ;;
+				esac
+			fi
+		done
+
+		if $HasVar; then
+			ASSIGN="eval local $OptionVarName=\"$OriginalResponse\""
+			return
+		else
+			print -w "'$Response' is not a valid response, please try again..."
+		fi
+	done
+
+	raise usrerr_invalid_response "'$Response' is not a valid response, aborting."
+}
+
+# -----[ INFO / HELP ]---------------------------------------------------------
+
+# [info-doc print info]
+# {BLU}help [-nohead] [-short | -synopsis] <FilterFunction|all>
+#   Prints help for a specific sub command <FilterFunction> or all available help if <FilterFunction> = all (default).
+#   Aliases: info | ?
+#   -nohead	Does not print the header.
+#   -short	Only prints a short description on each sub command.
+#   -synopsis	Only prints the command synopsis.
+print_info() {
+	argo2 nohead:infoNoHeader short:infoShortDoc synopsis:infoSynopsisDoc %infoFilterFunction?all -- "$@"; $ASSIGN
+
+	infoTextFormats[00]="{RST}|\033[00m"
+	infoTextFormats[01]="{BLD}|\033[01m"
+	infoTextFormats[02]="{ULN}|\033[04m"
+	infoTextFormats[10]="{RED}|\033[31m"
+	infoTextFormats[11]="{GRN}|\033[32m"
+	infoTextFormats[12]="{YLW}|\033[33m"
+	infoTextFormats[13]="{BLU}|\033[34m"
+	infoTextFormats[14]="{MGN}|\033[35m"
+	infoTextFormats[15]="{CYN}|\033[36m"
+
+	if ! $infoNoHeader; then
+		echo
+		echo "     ------------------===:[ INFO PAGE ]:===------------------"
+		echo
+	fi
+
+	for Lib in ${BASH_SOURCE[0]} $__STDInfoList; do
+		# echo $Lib
+		# infoLibFile=$(which $Lib)
+		infoLibFile=$Lib
+		debug -5 "info: Searching: $infoLibFile"
+		infoDocFlag=false
+		if [[ $infoFilterFunction == all && $Lib != "stdlib" ]]; then
+			if $infoShortDoc || $infoSynopsisDoc; then
+				echo
+			fi
+			# echo -e "                      ---=:[ $Lib ]:=---\n"
+		fi
+		local -i i
+		while read infoLine; do
+			if $infoDocFlag; then
+				if [[ $i == 1 ]] && $infoSynopsisDoc; then
+					infoDocFlag=false
+					if [[ $infoFilterFunction != all ]]; then
+						return
+					fi
+				elif [[ $i == 2 ]] && $infoShortDoc; then
+					infoDocFlag=false
+				elif [[ $infoLine != \#* ]]; then
+					infoDocFlag=false
+					echo
+					if [[ $infoFilterFunction != all ]]; then
+						return
+					fi
+				else
+					infoInfoLine=${infoLine#*# }
+					if $infoSynopsisDoc && [[ ! $infoCurrentInfoName == *main* ]]; then
+						echo -n "Synopsis: "
+					fi
+					for infoFormat in ${infoTextFormats[@]}; do
+						infoFormatParts=(${infoFormat/|/ })
+						infoInfoLine=${infoInfoLine/${infoFormatParts[0]}/${infoFormatParts[1]}}
+					done
+					echo -e "$infoInfoLine\033[0m"
+					i+=1
+				fi
+			fi
+
+			if [[ $infoLine =~ ^#.*info-doc ]]; then
+				infoCurrentInfoName=${infoLine#*info-doc }
+				infoCurrentInfoName=${infoCurrentInfoName%]*}
+				debug -5 "info: Current block: $infoCurrentInfoName ($infoFilterFunction)"
+				if [[ $infoFilterFunction == all || $infoCurrentInfoName == $infoFilterFunction ]]; then
+					infoDocFlag=true
+					i=0
+				fi
+			fi
+		done < $infoLibFile
+	done
+	# echo "        ------------------===:[ END ]:===------------------"
+	echo
+}
+
+# -----[ DEBUG ]---------------------------------------------------------------
+
+debug() {
+	! ${__STDDebugMode:-false} && return
+
+	if [[ $1 == -* ]]; then
+		dbgDebugLevel=${1:1}
+		shift
+	else
+		dbgDebugLevel=1
+	fi
+	dbgDebugMessage=" $@"
+
+	dbgLen=${#FUNCNAME[@]}
+	let "dbgCallDepth = dbgLen - 2" || true
+	dbgDebugFunction=${FUNCNAME[1]}
+	dbgDebugCallingFunction=${FUNCNAME[2]}
+	dbgLineNo=${BASH_LINENO[0]}
+	dbgDebugInfo=""
+	dbgDebugTimestamp=""
+
+	if [[ $dbgDebugLevel -le ${__STDDebugLevel:-0} && ## $dbgCallDepth -le ${__STDDebugCallDepth:-1} &&
+		(-z $__STDDebugFunction || $__STDDebugFunction == all || $__STDDebugFunction == *$dbgDebugFunction*) ]]; then
+
+		${__STDDebugInfo:-false} && dbgDebugInfo=" ($$:$BASH_SUBSHELL $dbgDebugCallingFunction->$dbgDebugFunction:$dbgLineNo)"
+		${__STDDebugTimestamp} && dbgDebugTimestamp=" [$(date +%s)]"
+
+		echo -e "@$dbgDebugLevel:$dbgCallDepth>$dbgDebugTimestamp$dbgDebugInfo$dbgDebugMessage"
+
+		if ${__STDDebugStack:-false}; then
+			io.print_stacktrace
+		fi
+	fi
+}
+
+# -----[ STACKTRACE ]----------------------------------------------------------
+
+io.print_stacktrace_pretty() {
+	local Header=${1:?}
+	local -i StartDepth=${2:-1}
+
+	StartDepth+=1
+	echo -en "\033[31m"
+	echo "============================================================"
+	echo -e "| ${Header//$'\n'/$'\n'| }"
+	local ST=$(io.print_stacktrace $StartDepth)
+	echo -e "| ${ST//$'\n'/$'\n'| }"
+	echo "============================================================"
+	echo -en "\033[00m"
+}
+
+io.print_stacktrace() {
+	local StartDepth=${1:-0}
+
+	local StackDepth=${#FUNCNAME[@]}
+	local CallDepth
+	let "CallDepth = StackDepth - 2" || true
+
+	local i=0 is=0 ScriptName
+	echo -e "Trace:"; # echo "${BASH_LINENO[@]}"; echo "${FUNCNAME[@]}"
+	for i in $(seq $StartDepth $CallDepth); do
+		let "is = i + 1" || true
+		ScriptName=${BASH_SOURCE[$is]}
+		if [[ ${FUNCNAME[$is]} != raise ]]; then
+			echo "  ${ScriptName##*/}::${FUNCNAME[$is]}:${BASH_LINENO[$i]}"
+		fi
+	done
+}
+
+# -----[ TRACING ]-------------------------------------------------------------
+
+io.activate_tracing() {
+	if ${STD_TraceMode:-false}; then
+		exec 4>>${STD_TraceFile:-default.trace}
+		export BASH_XTRACEFD=4
+		export PS4='$BASH_SOURCE:$LINENO::'
+		set -x
+	fi
+}
+
+# -----[ CONSTANTS ]-----------------------------------------------------------
+
+IoFormats_rst=$'\033[00m'
+IoFormats_bld=$'\033[01m'
+IoFormats_uln=$'\033[04m'
+IoColors_red=$'\033[31m'
+IoColors_grn=$'\033[32m'
+IoColors_brn=$'\033[33m'
+IoColors_blu=$'\033[34m'
+IoColors_mgn=$'\033[35m'
+IoColors_trk=$'\033[36m'
+IoColors_slv=$'\033[37m'
+IoColors_gry=$'\033[90m'
+IoColors_org=$'\033[91m'
+IoColors_lim=$'\033[92m'
+IoColors_ylw=$'\033[93m'
+IoColors_sky=$'\033[94m'
+IoColors_pnk=$'\033[95m'
+IoColors_cyn=$'\033[96m'
+IoColors_wht=$'\033[97m'
+
+IoFormats_reset=$'\033[00m'
+
+# =============================================================================

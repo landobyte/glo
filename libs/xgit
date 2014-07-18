@@ -1,0 +1,580 @@
+#!/usr/bin/env bash
+
+# =====[ LIB : XGIT ]==========================================================
+#
+#	Written by Francois Joubert
+#	Sep 2013
+#
+#	Extended git tools
+#
+# =============================================================================
+
+import utils
+
+# -----[ CHECKS ]--------------------------------------------------------------
+
+xgit.is_wd_dirty() {
+	key_argo untracked=Untracked?false -- "$@"; $ASSIGN
+
+	local Filter="| grep -v ^??"
+	if $Untracked; then
+		Filter=""
+	fi
+
+	[[ -n "$(eval "git status -s $Filter" || true)" ]]
+}
+
+xgit.is_wd_clean() {
+	! xgit.is_wd_dirty
+}
+
+xgit.branch_exist() {
+	local FullBranchName=${1:?}
+
+	[[ -n $(git branch -a | grep "^[* a-z/]*$FullBranchName$" || true) ]]
+}
+
+#[DEPRICATED]
+xgit.branch_istype() {
+	xgit.is_branch_type $@
+}
+xgit.is_branch_type() {
+	local Type=${1:?}
+
+	local Result=$(git branch | grep "^\*\ *$Type")
+	debug -2 "Result: $Result"
+	if [[ -z $Result ]]; then
+		RET=false
+		return 1
+	else
+		RET=${Result##*/}
+		debug -2 "Return: $RET"
+	fi
+}
+
+#[DEPRICATED]
+xgit.branch_isnewer() {
+	xgit.is_branch_newer $@
+}
+xgit.is_branch_newer() {
+	local BranchName=${1:?}
+	local RefBranchName=${2:-HEAD}
+
+	local BranchTimestamp=$(git show --no-patch --format="%ct" $BranchName)
+	local RefBranchTimestamp=$(git show --no-patch --format="%ct" $RefBranchName)
+
+	debug -2 "Isnewer: $BranchName [$BranchTimestamp] than $RefBranchName [$RefBranchTimestamp]"
+
+	[[ $BranchTimestamp -gt $RefBranchTimestamp ]]
+}
+
+xgit.has_conflict() {
+	local Unmerged=$(git ls-files --unmerged)
+
+	[[ -n $Unmerged ]]
+}
+
+xgit.has_untracked() {
+	local Untracked=$(git ls-files --others --exclude-standard)
+
+	RET="$Untracked"
+	[[ -n $Untracked ]]
+}
+
+xgit.tag_exist() {
+	local TagName=${1:?}
+
+	if git show-ref --verify --quiet refs/tags/$TagName; then
+		RET=true
+		return 0
+	else
+		RET=false
+		return 1
+	fi
+}
+
+xgit.is_version_valid() {
+	local VersionToCheck=${1:?}
+
+	if [[ ! -z $(echo $VersionToCheck | grep -E "^[0-9]+\.[0-9]+\.[0-9]+$") ]]; then
+		RET=$VersionToCheck
+	elif [[ ! -z $(echo $VersionToCheck | grep -E "^[0-9]+\.[0-9]+$") ]]; then
+		RET=$VersionToCheck.0
+	elif [[ ! -z $(echo $VersionToCheck | grep -E "^[0-9]+$") ]]; then
+		RET=$VersionToCheck.0.0
+	else
+		raise enverr_bad_version_format "Bad version format."
+	fi
+}
+
+# -----[ INFO ]----------------------------------------------------------------
+#[DEPRICATED]
+xgit.branch_gettype() {
+	xgit.get_branch_type $@
+}
+xgit.get_branch_type() {
+	local CurrentBranch=${1:-$(git branch | grep -e "^\*")}
+	if [[ $CurrentBranch == *detached* ]]; then
+		FULLNAME=${CurrentBranch##* }
+		FULLNAME=${FULLNAME%)*}
+
+		FULLTYPE=detached
+		TYPE=detached
+		NAME=$FULLNAME
+	else
+		FULLNAME=${CurrentBranch##* }
+
+		FULLTYPE=${FULLNAME%/*}
+		FULLTYPE=${FULLTYPE#remotes/}
+		TYPE=${FULLTYPE##*/}
+		NAME=${FULLNAME##*/}
+	fi
+	case $TYPE in
+		feature)  SHORTTYPE=F ;;
+		bug)      SHORTTYPE=B ;;
+		hotfix)   SHORTTYPE=X ;;
+		detached) SHORTTYPE=D ;;
+		*)        SHORTTYPE=T ;;
+	esac
+	RET=$TYPE
+}
+
+xgit.commits_behind_dev() {
+	# todo: implement xgit.commits_behind_dev
+	# git rev-list --left-only dev...f0ca0ec # ci behind
+	# git rev-list --left-right dev...f0ca0ec # ci behind and ahead
+	raise syserr_not_implemented
+}
+
+xgit.conflict_source() {
+	key_argo clear=ClearFlag?false -- "$@"; $ASSIGN
+
+	utils.get_state merge_action; local Action=$RET
+	if $ClearFlag; then
+		utils.set_state merge_action resolved
+	fi
+
+	RET=$Action
+}
+
+xgit.version_current() {
+	RET=$(git describe --tags --abbrev=0 master)
+}
+
+xgit.version_bump() {
+	local FullVersionNumber=${1:?}
+	local BumpCode=${2:?}
+
+	local Maj=${FullVersionNumber%%.*}
+	local Tail=${FullVersionNumber#*.}
+	local Min=${Tail%%.*}
+	local Fix=${Tail##*.}
+
+	local BumpMaj=${BumpCode%%.*}
+	local BumpTail=${BumpCode#*.}
+	local BumpMin=${BumpTail%%.*}
+	local BumpFix=${BumpTail##*.}
+
+	xgit.version_bump.bump_number $Maj $BumpMaj; Maj=$RET
+	xgit.version_bump.bump_number $Min $BumpMin; Min=$RET
+	xgit.version_bump.bump_number $Fix $BumpFix; Fix=$RET
+
+	RET=$Maj.$Min.$Fix
+}
+
+xgit.version_bump.bump_number() {
+	local -i VersionNumber=${1:?}
+	local BumpChar=${2:?}
+
+	case $BumpChar in
+		+) VersionNumber+=1 ;;
+		-)
+			if [[ VersionNumber -gt 0 ]]; then
+				VersionNumber+=-1
+			fi ;;
+		0) VersionNumber=0 ;;
+		x) ;;
+	esac
+
+	RET=$VersionNumber
+}
+
+# -----[ ACTIONS ]-------------------------------------------------------------
+
+xgit.goto_repo_root() {
+	while [[ ! -d .git ]]; do
+        cd ..
+
+        if [[ $(pwd) == / ]]; then
+        	raise enverr_not_git_repo "This is not a git repo."
+        fi
+    done
+}
+
+xgit.init() {
+	print "   $(git init)"
+}
+
+xgit.clone() {
+	echo bla
+}
+
+xgit.branch() {
+	local CheckoutBranchName=${1:?}
+
+	git checkout -b $CheckoutBranchName --quiet
+}
+
+xgit.branch_new() {
+	local NewBranchName=${1:?}
+
+	git branch $NewBranchName
+}
+
+xgit.branch_rename() {
+	local NewBranchName=${1:?}
+
+	git branch -m $NewBranchName
+}
+
+xgit.branch_delete() {
+	local DeleteBranchName=${1:?}
+
+	git branch --delete $DeleteBranchName --quiet
+}
+
+xgit.checkout() {
+	local CheckoutBranchName=${1:?}
+
+	git checkout $CheckoutBranchName --quiet
+}
+
+xgit.add() {
+	key_argo all=AllFlag -- "$@"; $ASSIGN
+	local Files="$@"
+
+	if $AllFlag; then
+		git add --all .
+	else
+		git add $Files
+	fi
+}
+
+xgit.add_all() {
+	git add --all .
+}
+
+xgit.commit() {
+	key_argo index=IndexOnly?false -- "$@"; $ASSIGN
+
+	local AllOption="--all"
+	if $IndexOnly; then
+		AllOption=""
+	fi
+	local Message=${1:?}
+
+	xgit.commit.do_commit $AllOption -m "$Message"
+}
+
+xgit.commit_amend() {
+	key_argo index=IndexOnly?false -- "$@"; $ASSIGN
+
+	local AllOption="--all"
+	if $IndexOnly; then
+		AllOption=""
+	fi
+	local Message=$1
+
+	if [[ -n "$Message" ]]; then
+		xgit.commit.do_commit $AllOption --amend --message "$Message"
+	else
+		xgit.commit.do_commit $AllOption --amend --no-edit
+	fi
+}
+
+xgit.commit.do_commit() {
+	if Commit=$(git commit "$@" 2>&1); then
+		xgit.commit.print "$Commit"
+	elif [[ $Commit == *"Changes not staged"* ]]; then
+		raise enverr_commit_error "No files in index to commit."
+	elif [[ $Commit == *"Untracked files"* ]]; then
+		raise enverr_commit_error "Untracked files not added yet."
+	elif [[ $Commit == *"nothing to commit"* ]]; then
+		raise enverr_commit_error "No changes to commit."
+	elif [[ $Commit == *"Paths with -a"* ]]; then
+		raise enverr_commit_error "Paths may only be specified with -index option."
+	else
+		xgit.commit.print "$Commit"
+		raise enverr_commit_error "Unknown commit error."
+	fi
+}
+
+xgit.commit.print() {
+	local Commit="$@"
+
+	print -i "New Commit"
+	Commit=${Commit//$'\n'/$'\n'   }
+	print "   $Commit"
+}
+
+xgit.merge() {
+	key_argo ff=FastForwardFlag?false commit=CommitFlag?true -- "$@"; $ASSIGN
+
+	local DoFastForward="--no-ff"
+	if $FastForwardFlag; then
+		DoFastForward="--ff-only"
+	fi
+
+	local DoCommit="--no-commit"
+	if $CommitFlag; then
+		DoCommit="--commit"
+	fi
+
+	local MergeBranchName=${1:?}
+	local MergeMessage=${2:?}
+
+	utils.set_state merge_action merge
+
+	local Merge
+	if Merge=$(git merge $DoCommit $DoFastForward -m "$MergeMessage" $MergeBranchName 2>&1); then
+		RET="$Merge"
+		SUCCESS=true
+	else
+		RET="$Merge"
+		SUCCESS=false
+	fi
+}
+
+xgit.merge_abort() {
+	git merge --abort
+}
+
+xgit.tag() {
+	local TagName=${1:?}
+
+	git tag --force $TagName
+}
+
+xgit.transfer() {
+	prompt "Uncommitted changes detected - would you like to transfer it?" !yes:continue abort:abort
+
+	xgit.stash
+}
+
+xgit.stash() {
+	git stash --keep-index --quiet
+	__XGITTransferFlag=true
+}
+
+xgit.transfer_apply() {
+	if ${__XGITTransferFlag:-false}; then
+		if [[ $1 == -m ]]; then
+			utils.set_state merge_action ${2:?}
+		else
+			utils.set_state merge_action transfer
+		fi
+		__XGITTransferFlag=false
+		if ! git stash pop --quiet; then
+			if xgit.has_conflict; then
+				raise enverr_git_merge_conflicted "Transfer applied, but with conflicts."
+			else
+				raise enverr_git_pop_failed "Stash pop failed."
+			fi
+		fi
+	fi
+}
+
+xgit.diff() {
+	key_argo status=StatusFlag?false index=IndexFlag?false mode=DiffMode -- "$@"; $ASSIGN
+
+	local Args="$@"
+
+	case $DiffMode in
+		word) DiffModeOptions='--color-words=[$[:alnum:]_-]+|[^[:space:]] --ignore-blank-lines --ignore-space-at-eol' ;;
+		*)    DiffModeOptions='--color' ;;
+	esac
+	local Diff="$(git diff --patience "$DiffModeOptions" $(ift $StatusFlag --name-status) $(ift $IndexFlag --cached) $Args)"
+	Diff="${Diff//$'\t'/<__tab__>}"
+
+	if [[ -z $Diff ]]; then
+		return
+	fi
+
+	local Line FileName NewFile HunkLines
+	while read Line; do
+		if [[ $Line =~ ^."[1mdiff --git" ]]; then
+			FileName=${Line#*diff --git a/}
+			FileName=${FileName%% *}
+			NewFile=false
+		elif [[ $Line =~ ^."[1mnew file mode" ]]; then
+			NewFile=true
+		elif [[ $Line =~ ^."[36m@@" ]]; then
+			HunkLines=${Line#*@@ }
+			HunkLines=${HunkLines% @@*}
+			HunkLines=${HunkLines//-}
+			HunkLines=${HunkLines//+/-> }
+			HunkLines=${HunkLines//,/:}
+			if [[ -n $FileName ]]; then
+				if $NewFile; then
+					FileName="*$FileName"
+				fi
+				xgit.diff.print_file_header "$FileName" "$HunkLines"
+				FileName=""
+			else
+				xgit.diff.print_hunk_header "$HunkLines"
+			fi
+		elif [[ ! $Line =~ ^."[1mindex" &&
+				! $Line =~ ^."[1m---" &&
+				! $Line =~ ^."[1m+++" ]]; then
+			Line="${Line//<__tab__>/    }"
+			echo "  |$Line"
+		fi
+	done <<< "$Diff"
+	echo
+}
+
+xgit.diff.print_file_header() {
+	local Header="=====[ ${1:?} ]=====( ${2:?} )======================================================================================="
+	print -c blu "${Header::100}"
+}
+
+xgit.diff.print_hunk_header() {
+	local Header="-----( ${1:?} )------------------------------------------------------------------------------------------------------"
+	print -c blu "${Header::100}"
+}
+
+xgit.fetch() {
+	print -c i -d -n "Fetching... "
+
+	local Fetch
+	if Fetch=$(git fetch 2>&1); then
+		if [[ -n $Fetch ]]; then
+			print -c s -d "Success"
+			Fetch=${Fetch//$'\n'/$'\n'   }
+			print "   $Fetch"
+			RET=true
+		else
+			print -c s -d "Up to date"
+			RET=false
+		fi
+	else
+		print -c e -d "Failed!"
+		raise syserr_git_fetch_failed "Cannot fetch, check access, repo settings and the network."
+	fi
+}
+
+xgit.ff_branch() {
+	local Branch=${1:?}
+
+	if xgit.is_branch_type $Branch; then
+		local Merge
+		if Merge=$(git merge --ff-only origin/$Branch 2>&1); then
+			SUCCESS=true
+		else
+			print -e "Branch fast-forward failed!"
+			SUCCESS=false
+		fi
+
+		if [[ $Merge != *"up-to-date"* ]]; then
+			Merge="${Merge//$'\n'/$'\n'   }"
+			print "   $Merge"
+		fi
+	else
+		# only do ff - if remote branch diverged from local, it fails.
+		# FETCH_HEAD is overridden.
+		local Fetch
+		if Fetch=$(git fetch . origin/$Branch:$Branch 2>&1); then
+			SUCCESS=true
+		else
+			print -e "Branch fast-forward failed!"
+		fi
+	fi
+}
+
+xgit.pull() {
+	local PullBranchName=${1:?}
+
+	print -i -n "Updating... "
+	utils.set_state merge_action pull
+
+	local Pull
+	if Pull=$(git pull --ff-only --no-edit origin $PullBranchName 2>&1); then #--quiet
+		if [[ $Pull == *up-to-date* ]]; then
+			print -c i "Up to date"
+		else
+			Pull=${Pull//$'\n'/$'\n'   }
+			print "\n   $Pull"
+		fi
+	elif git fetch 2>&1; then
+		print -c w "fetched"
+	else
+		print -c e "Failed!"
+		print -c e "$Pull"
+		raise enverr_git_pull_failed
+	fi
+}
+
+xgit.push() {
+	key_argo force=ForceFlag?false -- "$@"; $ASSIGN
+
+	local ForceOption
+	if $ForceFlag; then
+		ForceOption="--force"
+	fi
+	local PushBranchNames=${@:?}
+
+	print -i -n "Pushing changes... "
+	local Push
+	if Push=$(git push $ForceOption --set-upstream --tags --porcelain origin $PushBranchNames 2>&1); then
+		print -c s -d "Success"
+		Push=$(echo "$Push" | grep -A 100 "^To " | grep "^[^=].*" | grep -v "set up to track remote branch" |  grep -v "Done")
+		Push=${Push//refs\/}
+		Push=${Push//heads\/}
+		Push=${Push//tags\/}
+		Push="   ${Push//$'\n'/$'\n'   }"
+		print "$Push"
+	else
+		print -c e -d "Failed!"
+		Push=$(echo "$Push" | grep -A 100 "^To " | grep "^[^=].*" | grep -v "Done")
+		Push="   ${Push//$'\n'/$'\n'   }"
+		print "$Push"
+		raise syserr_git_push_failed "Pushing $PushBranchNames failed..."
+	fi
+}
+
+# -----[ FOREACH ]-------------------------------------------------------------
+
+xgit.repo_header() {
+	local CurrentDir=$(pwd)
+	local RepoName=${CurrentDir##*/}
+	local GitBranch=$(git branch | grep ^\*); GitBranch=${GitBranch:2}
+	local Header="-----[ $RepoName : $GitBranch ]------------------------------------------------------------"
+	print -c blu "${Header::60}"
+	RET=$RepoName
+}
+
+xgit.foreach() {
+	local Delegate=${1:?}
+
+	debug -1 "FUNC: foreach [$Delegate]"
+
+	xgit.goto_repo_root
+
+	local SubRepos=$(find . -type d -name .git | grep -v "\.test" | grep -v "\./\.git" || true)
+	debug -2 "All Repos: ${SubRepos//$'\n'/; }"
+
+	if [[ -n $SubRepos ]]; then
+		local SubRepo
+		for SubRepo in $SubRepos; do
+			debug -2 "Repo: $SubRepo"
+			local RepoPath=${SubRepo%/*}
+			local CurrentDir=$(pwd)
+
+			cd $RepoPath
+			$Delegate ${RepoPath##*/} $RepoPath
+			cd $CurrentDir
+		done
+	fi
+}
+
+# =============================================================================

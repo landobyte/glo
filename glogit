@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# =====[ GLO GIT ]=============================================================
+# =====[ LIB : GLO GIT ]=======================================================
 #
 #	Written by Francois Joubert
 #	Oct 2013
@@ -9,17 +9,26 @@
 #
 # =============================================================================
 
-lib glogit
+cmdo2 'add->glogit.add'
+cmdo2 'commit+ci->glogit.commit'
+cmdo2 'cii->glogit.cii'
+cmdo2 'cia->glogit.cia'
+cmdo2 'co->glogit.co'
+cmdo2 'wip->glogit.wip'
+cmdo2 'unwip->glogit.unwip'
+cmdo2 'diff->glogit.diff'
+cmdo2 'reset->glogit.reset'
 
 # -----[ GIT COMMANDS ]--------------------------------------------------------
 
 # [info-doc add]
-# {BLU}add <FileList>
+# {BLU}add [-all|a] <FileList>
 #   Synonym for 'git add <FileList>'.
-glo_add() {
-	argo "@Files" "$@"
+#   -a	Adds all untracked files to the index.
+glogit.add() {
+	argo2 all+a:AllFlag %Files -- "$@"; $ASSIGN
 
-	git add $Files
+	xgit.add all=$AllFlag $Files
 }
 
 # [info-doc commit]
@@ -28,27 +37,19 @@ glo_add() {
 #   -i	Only commits the index in git
 #   -a	Amends the last commit with the current modifications, if <Message> is empty it is left unmodified
 #   -d	Allows a 'dirty' commit directly to dev - use SPARINGLY!
-glo_commit() {
-	argo "index|i:IndexFlag amend|a:AmendFlag dirty|d:DirtyFlag @Message?" "$@"
+glogit.commit() {
+	argo2 index+i:IndexFlag amend+a:AmendFlag dirty+d:DirtyFlag %Message -- "$@"; $ASSIGN
 
 	if [[ -z $Message ]] && ! $AmendFlag; then
-		echo "!> Message may only be empty with '-amend'."
-		exit 1
+		raise usrerr_bad_message "Message may only be empty with '-amend'."
 	fi
 
-	git_branch_gettype; TaskType=$TYPE
+	gloutils.check_repo
+
+	xgit.get_branch_type; local TaskType=$TYPE
 
 	if [[ $TaskType == master ]]; then
-		echo "!> Commits may not be made on master."
-		exit 1
-	fi
-
-	if [[ $TaskType == dev ]] && ! $DirtyFlag; then
-		echo "!> Commits should not be made directly to dev, but, for trivial commits use '-dirty' flag."
-		prompt "?> Would you like to create a task?" TaskName:var !abort:exit1
-
-		git_stash
-		glo_task "$TaskName"
+		raise usrerr_commit_not_allowed "Commits may not be made on master."
 	fi
 
 	Message="$(echo ${Message:0:1} | tr '[:lower:]' '[:upper:]')${Message:1}"
@@ -56,80 +57,119 @@ glo_commit() {
 		Message="${Message%.}"
 	fi
 
-	if $DirtyFlag && [[ $TaskType == dev ]]; then
-		Message="Dirty commit: $Message"
-		git_pull dev
-	fi
-
-	CommitAddOption="-a"
-	if $IndexFlag; then unset CommitAddOption; fi
-	if $AmendFlag; then
-		if [[ -n "$Message" ]]; then
-			Commit=$(git commit $CommitAddOption --amend -m "$Message")
+	if [[ $TaskType == dev ]]; then
+		if $DirtyFlag; then
+			Message="Dev commit: $Message"
 		else
-			Commit=$(git commit $CommitAddOption --amend --no-edit)
+			raise usrerr_commit_not_recommended "Use the '-dirty' flag to commit directly to dev."
 		fi
-	else
-		Commit=$(git commit $CommitAddOption -m "$Message")
 	fi
-	Commit=${Commit//$'\n'/$'\n'   }
-	echo -e ">> $Commit"
 
-	if $DirtyFlag && [[ $TaskType == dev ]]; then
-		git_push dev
+	if xgit.has_untracked && local UntrackedFiles=$RET; then
+		print -w "New files have not been added yet.\n- ${UntrackedFiles//$'\n'/$'\n'- }"
+		prompt "Would you like to add them?" !yes:true no:false abort:abort; local Response=$RET
+		if $Response; then
+			xgit.add_all
+		fi
+	fi
+
+	if [[ $TaskType == dev ]]; then
+		print -i -n "Updating repo: "
+		xgit.fetch; local Fetched=$RET
+		if $Fetched; then
+			xgit.stash
+			xgit.ff_branch dev
+
+			utils.set_state commit "$Message"
+			local FlagsString=":"
+			if $IndexFlag; then FlagsString+="index:"; fi
+			if $AmendFlag; then FlagsString+="amend:"; fi
+			utils.set_state commit_flags $FlagsString
+
+			xgit.transfer_apply -m dev_commit
+		fi
+	fi
+
+	if $AmendFlag; then
+		xgit.commit_amend index=$IndexFlag "$Message"
+	else
+		xgit.commit index=$IndexFlag "$Message"
+	fi
+
+	if [[ $TaskType == dev ]]; then
+		xgit.push dev
 	fi
 }
 
 # [info-doc cii]
 # {BLU}cii <Message>
 #   Synonym for 'glo commit -index <Message>'.
-glo_cii() {
-	argo "@Message" "$@"
+glogit.cii() {
+	argo2 %Message -- "$@"; $ASSIGN
 
-	glo_commit -index "$Message"
+	glogit.commit -index "$Message"
 }
 
 # [info-doc cia]
 # {BLU}cia [<Message>]
 #   Synonym for 'glo commit -amend <Message>'.
-glo_cia() {
-	argo "@Message?" "$@"
+glogit.cia() {
+	argo2 %Message -- "$@"; $ASSIGN
 
-	glo_commit -amend "$Message"
+	glogit.commit -amend "$Message"
 }
 
 # [info-doc co]
 # {BLU}co <Args>
 #   Synonym for 'git checkout <Args>'.
-glo_co() {
-	argo "@Args" "$@"
+glogit.co() {
+	argo2 ---
 
-	git checkout $Args
+	local Checkout
+	if Checkout=$(git checkout "$@" 2>&1); then
+		if [[ $Checkout == *Switched* ]]; then
+			print -i "Switched to $@"
+		fi
+	elif xgit.is_wd_dirty; then
+		raise syserr_checkout_failed "Commit changes before switching."
+	else
+		Checkout=${Checkout//$'\n'/$'\n'   }
+		print "   $Checkout"
+		raise syserr_checkout_failed
+	fi
 }
 
 # [info-doc wip]
 # {BLU}wip
 #   Synonym for 'git commit -am WIP'.
-glo_wip() {
-	argo -- "$@"
+glogit.wip() {
+	argo2 -- "$@"
 
-	git commit -am WIP
+	xgit.add_all
+	local Date=$(date +"%y-%m-%d %T")
+	git commit -am "WIP: $Date"
 }
 
 # [info-doc unwip]
 # {BLU}unwip
 #   Synonym for 'git reset HEAD^'.
-glo_unwip() {
-	argo -- "$@"
+glogit.unwip() {
+	argo2 -- "$@"
 
-	git reset --mixed HEAD^
+	LastMsg=$(git show --no-patch --format="%s" HEAD)
+	print $LastMsg
+	if [[ $LastMsg == "WIP"* ]]; then
+		git reset --mixed HEAD^
+	else
+		raise enverr_no_wip "No WIP commit on this branch."
+	fi
 }
 
 # [info-doc reset]
 # {BLU}reset <Args>
 #   Synonym for 'git reset --hard <Args>'.
-glo_reset() {
-	argo "@Files?" "$@"
+glogit.reset() {
+	argo2 %Files -- "$@"; $ASSIGN
 
 	HardFlag=false
 	if [[ -z $Files ]]; then
@@ -137,25 +177,48 @@ glo_reset() {
 		Files="the working dir"
 	fi
 
-	prompt "Are you sure you would like to reset $Files to match the head commit?" yes:continue !abort:exit1
+	prompt "Are you sure you would like to reset $Files to match the head commit?" yes:continue !abort:abort
 
 	if $HardFlag; then
-		git reset --hard HEAD
+		git reset --hard HEAD > /dev/null
+		print -i "Working directory reset to latest commit."
 	else
-		git checkout $Files
+		git checkout $Files > /dev/null
+		print -i "Files [$Files] reset to latest commit."
 	fi
 }
 
 # [info-doc diff]
 # {BLU}diff <Args>
 #   Synonym for 'git diff <Args>'.
-glo_diff() {
-	argo "@Args?" "$@"
+glogit.diff() {
+	argo2 status+s:StatusFlag index+i:IndexFlag mode+m=DiffMode?${GLO_DiffMode:-word} %Args -- "$@"; $ASSIGN
 
 	if [[ -z $Args ]]; then
-		git diff
+		xgit.diff status=$StatusFlag index=$IndexFlag mode=$DiffMode
 	else
-		git diff "$Args"
+		local IsArg=false File
+		for File in $Args; do
+			if [[ ! -f $File ]]; then
+				IsArg=true
+				break
+			fi
+
+			local Path=${File%/*}
+			if [[ ! -d $Path ]]; then
+				IsArg=true
+				break
+			fi
+
+			cd $Path
+			local FileName=${File##*/}
+			xgit.diff status=$StatusFlag index=$IndexFlag mode=$DiffMode $FileName
+			cd - > /dev/null
+		done
+
+		if $IsArg; then
+			xgit.diff status=$StatusFlag index=$IndexFlag mode=$DiffMode $Args
+		fi
 	fi
 }
 

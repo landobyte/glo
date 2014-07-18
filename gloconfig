@@ -1,0 +1,244 @@
+#!/bin/bash
+
+# =====[ LIB : GLO CONFIG ]====================================================
+#
+#	Written by Francois Joubert
+#	Jun 2014
+#
+#	This lib contains glo deps control
+#
+# =============================================================================
+
+import utils
+
+cmdo2 'rdc->gloconfig.rdc'
+cmdo2 'deps->gloconfig.deps'
+cmdo2 'snap->gloconfig.deps.snapshot'
+cmdo2 'run->gloconfig.run_action'
+
+# -----[ RDC ]-----------------------------------------------------------------
+
+gloconfig.rdc() {
+	local Identifier=${1:?}
+
+	rdc_delegate() {
+		local Value=${@:?}
+		print -i "$Value"
+	}
+
+	gloutils.rdc $Identifier rdc_delegate
+}
+
+# -----[ DEPS ]----------------------------------------------------------------
+
+# todo: clean, prune, latest, stable, release
+
+gloconfig.deps() {
+	local SubCmd=${1:-list}; shift || true
+
+	case $SubCmd in
+		list) raise not_implemented "$SubCmd is not yet implemented" ;;
+		up) gloconfig.deps.up "$@" ;;
+		prune) raise not_implemented "$SubCmd is not yet implemented" ;;
+		clean) raise not_implemented "$SubCmd is not yet implemented" ;;
+		*) raise usrerr_invalid_cmd "$SubCmd is not a valid command [list, up, prune or clean]."
+	esac
+}
+
+gloconfig.deps.up() {
+	key_argo snapshot=SnapshotFlag -- "$@"; $ASSIGN
+
+	gloutils.check_repo
+
+	local DepsUpped=false
+	dep_delegate() {
+		Value=${1:?}
+
+		DepsUpped=true
+		local CurrentDir
+
+		utils.config.parse "$Value" dir; local Dir=$RET
+		if [[ -d $Dir ]]; then
+			CurrentDir=$(pwd)
+			cd $Dir
+		else
+			raise enverr_bad_deps_dir "Dir $Dir does not exists."
+		fi
+
+		utils.config.parse "$Value" repo; local BaseRepo=$RET
+		utils.config.parse "$Value" version; local Version=$RET
+		utils.config.parse "$Value" items item_delegate $BaseRepo $Version
+
+		cd $CurrentDir
+	}
+
+	item_delegate() {
+		local Value=${1:?}; shift
+		local BaseRepo=${1:?}
+		local Version=${2:?}
+
+		local Repo
+
+		if [[ $Value == *"{"*"}"* ]]; then
+			utils.config.parse "$Value" name; DepName=$RET
+			Repo="$BaseRepo$DepName.git"
+			utils.config.parse "$Value" repo
+			if [[ -n $RET ]]; then Repo=$RET; fi
+			utils.config.parse "$Value" version
+			if [[ -n $RET ]]; then Version=$RET; fi
+		else
+			DepName=$Value
+			Repo="$BaseRepo$DepName.git"
+		fi
+
+		if $SnapshotFlag; then
+			# echo -n "Checking snap $DepName: "
+			local Snapshot=${SnapshotLookup[$DepName]}
+			# echo "$Snapshot"
+			if [[ -n $Snapshot ]]; then
+				Version=$Snapshot
+			fi
+		fi
+
+		gloconfig.deps.do_update dep=$DepName repo=$Repo version=$Version
+	}
+
+	if $SnapshotFlag; then
+		# echo "Reading snapshot"
+		gloutils.rdss; local ItemList=$RET
+
+		declare -A SnapshotLookup
+		local Item ItemName ItemSha
+		for Item in $ItemList; do
+			ItemName=${Item%:*}
+			ItemSha=${Item#*:}
+			SnapshotLookup[$ItemName]=$ItemSha
+		done
+	fi
+
+	gloutils.rdc system.deps dep_delegate
+
+	if ! $DepsUpped; then
+		print -w "No deps configured, checking deps.config..."
+		if [[ -f deps.config ]]; then
+			deps up
+		else
+			print -w "No deps configured!"
+		fi
+	fi
+}
+
+gloconfig.deps.do_update() {
+	key_argo dep=DepName repo=Repo version=Version -- "$@"; $ASSIGN
+
+	print -i -n "$DepName [$Version]: "
+
+	case $Version in
+		stable) Version=master ;;
+		latest) Version=dev ;;
+	esac
+
+	if [[ -d $DepName ]]; then
+		cd $DepName
+		if xgit.is_wd_clean; then
+			xgit.fetch
+			xgit.ff_branch master
+			xgit.ff_branch dev
+			xgit.checkout $Version
+		else
+			print -c w -d "Working dir dirty, skipping!"
+		fi
+		cd ..
+	else
+		print -c i -n -d "Cloning... "
+		git clone --no-checkout --quiet $Repo $DepName 2> /dev/null || true
+		if [[ -d $DepName ]]; then
+			cd $DepName
+			xgit.checkout $Version
+			print -c s -d "Done"
+			cd ..
+		else
+			print -c e -d "Error cloning $Repo - make sure it exists."
+		fi
+	fi
+}
+
+# -----[ SNAPSHOT ]------------------------------------------------------------
+
+gloconfig.deps.snapshot() {
+	argo2 ---
+
+	local SnapshotConfig=$'(config:snapshot, version:1)::{\n'
+
+	gloutils.check_repo
+
+	snap_delegate() {
+		local RepoName=${1:?}
+		local Sha=$(git rev-parse HEAD)
+		SnapshotConfig+=$'\t'$RepoName:$Sha$'\n'
+	}
+
+	xgit.foreach snap_delegate
+
+	SnapshotConfig+=$'}\n'
+
+	echo "$SnapshotConfig" > .glo/snapshot
+	xgit.add .glo/snapshot
+}
+
+# -----[ RUN ]-----------------------------------------------------------------
+
+gloconfig.run_action() {
+	argo2 Action %Env -- "$@"; $ASSIGN
+
+	if [[ -z $Env ]]; then
+		Env="SYSTEM:system INSTALLATION:main"
+	fi
+
+	local Actioned=false
+	action_delegate() {
+		local RawCommand="$1"
+
+		local Arg Identifier ActionCommand
+		for Arg in $RawCommand; do
+			gloconfig.run_action.expand_arg $Arg "$Env"; Arg=$RET
+			if [[ $Arg == '$'* ]]; then
+				Identifier=${Arg:1}
+				gloutils.rdc $Identifier; local Value=$RET
+				if [[ -z $Value ]]; then
+					prompt "Expanded identifier '$Identifier' is not configured!" ignore:continue !abort:abort
+				fi
+				ActionCommand+="$Value "
+			else
+				ActionCommand+="$Arg "
+			fi
+		done
+		Actioned=true
+
+		if ! eval "$ActionCommand"; then
+			print -e "Action command failed!: $ActionCommand"
+		fi
+	}
+
+	gloutils.rdc system.actions.$Action action_delegate
+
+	if ! $Actioned; then
+		print -w "Action $Action is not configured."
+	fi
+}
+
+gloconfig.run_action.expand_arg() {
+	local Arg=${1:?}
+	local Env=$2
+
+	local EnvArg Var Value
+	for EnvArg in $Env; do
+		Var=${EnvArg%%:*}
+		Value=${EnvArg#*:}
+		Arg=${Arg//$Var/$Value}
+	done
+
+	RET=$Arg
+}
+
+# =============================================================================

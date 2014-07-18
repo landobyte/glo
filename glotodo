@@ -1,0 +1,109 @@
+#!/bin/bash
+
+# =====[ GLO TODO ]============================================================
+#
+#	Written by Francois Joubert
+#	Nov 2013
+#
+#	This lib contains the todo system.
+#
+# =============================================================================
+
+cmdo2 'todo->glotodo.todo'
+# todo: mark done, export code todo to file
+
+# -----[ TODO ]----------------------------------------------------------------
+
+# [info-doc todo]
+# {BLU}todo [-a|all] [-delete|d <ID>] | [<Message>]
+#   Display a list of tasks to be completed.
+#   If Message is specifed, a todo wil be created in .glo/todo.
+#   -a	Searches for todo's in all files and appends it to the list
+#   -d	Deletes a todo item given its ID
+glotodo.todo() {
+	argo2 all+a:ListAllFlag delete+d:DeleteFlag %Arg -- "$@"; $ASSIGN
+
+	gloutils.check_repo
+
+	if [[ -z $Arg ]]; then
+		glotodo.todo.list
+		if $ListAllFlag; then
+			glotodo.todo.extract files="$(find . -type f | grep -v '\.svn' | grep -v '\.git' | grep -v '\.glo' | grep -v '\.test' | grep -v ' ')"
+		fi
+	elif $DeleteFlag; then
+		glotodo.todo.delete id="$Arg"
+	else
+		glotodo.todo.add message="$Arg"
+	fi
+}
+
+glotodo.todo.list() {
+	if [[ -f ./.glo/todo ]]; then
+		local Id TodoString
+		while read Line; do
+			Id=${Line%::*}
+			TodoString=${Line#*::}
+			print "   $Id:: $TodoString"
+		done < ./.glo/todo
+	fi
+}
+
+glotodo.todo.extract() {
+	key_argo files=FileList -- "$@"; $ASSIGN
+
+	local File
+	local Line
+	for File in $FileList; do
+		File=${File#./}
+
+		local -i LineNr=0
+		local TodoString
+		local TodoFound
+		while read Line; do
+			LineNr+=1
+			TodoFound=false
+			case $Line in
+				*TODO:*)
+					TodoString=${Line#*TODO:}
+					TodoFound=true ;;
+				*Todo:*)
+					TodoString=${Line#*Todo:}
+					TodoFound=true ;;
+				*todo:*)
+					TodoString=${Line#*todo:}
+					TodoFound=true ;;
+			esac
+			if $TodoFound; then
+				print "   $File:$LineNr:: $TodoString"
+			fi
+		done < $File
+	done
+}
+
+glotodo.todo.add() {
+	key_argo message=TodoMessage -- "$@"; $ASSIGN
+
+	echo $(echo "obase=16; $(date +"%s")" | bc)::$TodoMessage >> ./.glo/todo
+}
+
+glotodo.todo.delete() {
+	key_argo id=Id -- "$@"; $ASSIGN
+
+	if [[ -f ./.glo/todo ]]; then
+		local Line
+		while read Line; do
+			if [[ $Line != $Id* ]]; then
+				echo "$Line" >> ./.glo/todo.new
+			fi
+		done < ./.glo/todo
+		mv ./.glo/todo.new ./.glo/todo
+	else
+		raise enverr_no_file "No todo file found."
+	fi
+}
+
+# =============================================================================
+
+# Id		Name		Source				Task
+# 1A1D1C75	super task	user				dev
+#						./glo/glocore:135	feature/super-task

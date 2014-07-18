@@ -1,0 +1,74 @@
+#!/bin/bash
+
+# =====[ LIB : GLO UTILS ]=====================================================
+#
+#	Written by Francois Joubert
+#	Jun 2014
+#
+#	This lib contains glo utils
+#
+# =============================================================================
+
+gloutils.check_repo() {
+    while [[ ! -d .glo ]]; do
+        cd ..
+
+        if [[ $(pwd) == / ]]; then
+            raise enverr_not_glo_repo "This is not a glo repo."
+        fi
+    done
+}
+
+# -----[ CONFIG READER ]-------------------------------------------------------
+
+gloutils.rdc() {
+	local Identifier=${1:?}
+	local Delegate=${2}
+	local DelegateArgs
+	if [[ -n $Delegate ]]; then
+		shift 2 || true
+		DelegateArgs="$@"
+	fi
+
+	gloutils.check_repo
+
+	local ConfigFile=.glo/config
+	if [[ ! -f $ConfigFile ]]; then
+		raise enverr_no_config "No config found."
+	fi
+
+	utils.config.lex $ConfigFile; local Tokens=$RET
+	if [[ -n $Tokens ]]; then
+		utils.config.parse "$Tokens" $Identifier $Delegate $DelegateArgs; # RET=$RET
+	else
+		print -w "Please update your glo-config to the new version."
+		case $Identifier in
+			system.name) Identifier="system_name" ;;
+			system.installations.main.uhost) Identifier="hosts main" ;;
+		esac
+		RET=$(rdc glo $Identifier || true)
+	fi
+}
+
+gloutils.rdss() {
+	gloutils.check_repo
+
+	local SnapshotFile=".glo/snapshot"
+
+	if [[ -f $SnapshotFile ]]; then
+		utils.config.lex $SnapshotFile; local Tokens=$RET
+		if [[ -n $Tokens ]]; then
+			local ItemList
+			snapshot_delegate() {
+				ItemList+="$1 "
+			}
+			utils.config.parse "$Tokens" root snapshot_delegate
+		fi
+
+		RET=$ItemList
+	else
+		RET=""
+	fi
+}
+
+# =============================================================================

@@ -1,0 +1,481 @@
+#!/bin/bash
+
+# =====[ LIB : GLO GRAPH ]=====================================================
+#
+#	Written by Francois Joubert
+#	Oct 2013
+#
+#	This lib contains visual glo commit logs.
+#
+# =============================================================================
+
+cmdo2 'view->glograph.view'
+
+# -----[ GIT COMMANDS ]--------------------------------------------------------
+
+# [info-doc view]
+# {BLU}view
+#   Display a visual graph of the branch hierarchy
+glograph.view() {
+	argo2 nodes+n=NodeCount?25 tracks+t=TrackCount?7 remotes+r:RemoteRefsFlag -- "$@"; $ASSIGN
+
+	xgit.goto_repo_root
+
+	COLS_TERM=$(tput cols)
+	ROWS_TERM=$(tput lines)
+
+	# TrackCount=10
+	# COLS_GRAPH=25
+	let "COLS_GRAPH = TrackCount * 3"
+	COLS_DANGLE=2
+	# let "COLS_BRANCH = COLS_TERM / 6"
+	COLS_BRANCH=0
+	COLS_COMMITTER=5
+	COLS_DATE=11
+	COLS_SHA=7
+	let "COLS_TEXT = COLS_TERM - (COLS_GRAPH + COLS_DANGLE + COLS_BRANCH + COLS_COMMITTER + COLS_DATE + COLS_SHA)"
+
+	$RemoteRefsFlag && AllOption=--all || unset AllOption
+	glograph.view.get_refs "$(git branch $AllOption --list | grep -v "\->" | grep -v detached)"; BranchRefs=(${REFS[@]}); RefShas=${NODES[@]}
+
+	HasMaster=false
+	MasterFlag=false
+	HasDev=false
+	DevFlag=false
+	MergeFlag=false
+	NeedsHeadFlag=false
+
+	HeadSha=$(git rev-parse HEAD)
+
+	for (( i = 0 ; i < $TrackCount ; i++ )); do
+		TrackParent[$i]="#nl"
+		TrackColors[$i]="#RST"
+		TrackHds[$i]="#nl"
+		TrackHdLinks[$i]="#nl#nl"
+		Tracks[$i]="#nl"
+		TrackLinks[$i]="#nl#nl"
+	done
+	TrackHdLinkColor="#RST"
+	TrackLinkColor="#RST"
+
+	if MasterSha=$(git rev-parse master 2> /dev/null); then
+		HasMaster=true
+		TrackParent[0]=$MasterSha
+		TrackColors[0]="#GRN"
+		Tracks[0]="#bt"
+		if $RemoteRefsFlag && OriginMasterSha=$(git rev-parse origin/master 2> /dev/null); then
+			# todo: check if origin is ahead first
+			TrackParent[0]=$OriginMasterSha
+		fi
+	fi
+
+	if DevSha=$(git rev-parse dev 2> /dev/null); then
+		HasDev=true
+		TrackParent[1]=$DevSha
+		TrackColors[1]="#RED"
+		Tracks[1]="#bt"
+		if $RemoteRefsFlag && OriginDevSha=$(git rev-parse origin/dev 2> /dev/null); then
+			# todo: check if origin is ahead first
+			TrackParent[1]=$OriginDevSha
+		fi
+	fi
+
+	unset Dangle
+	unset Branch
+
+	NodeList=$(git rev-list --max-count $NodeCount ${BranchRefs[@]})
+	for Node in $NodeList; do
+		CommitInfo=$(git show --no-patch --format="%P+++%s+++%an+++%ad" --date=short $Node)
+		CommitInfo=${CommitInfo//\"}
+		CommitInfo=${CommitInfo//\`}
+		CommitInfo=${CommitInfo//\\n}
+		Parents=(${CommitInfo%%+++*}); CommitInfo=${CommitInfo#*+++}
+		CommitText=${CommitInfo%%+++*}; CommitInfo=${CommitInfo#*+++}
+		CommitText=${CommitText:-No message}
+		glograph.view.initials "${CommitInfo%%+++*}"; CommitInfo=${CommitInfo#*+++}; Committer="$RET"
+		CommitDate=${CommitInfo%%+++*};
+
+		ParentCount=${#Parents[@]}
+		if [[ $ParentCount > 1 ]]; then
+			MergeFlag=true
+		fi
+
+		ChangeColorFlag=false
+		if glograph.view.get_branchname $Node; then
+			Branch=$RET
+			ChangeColorFlag=true
+			xgit.get_branch_type $Branch; local TaskType=$FULLTYPE; TaskName=$NAME
+			case $TaskType in
+				master)
+					ChangeColorFlag=false ;;
+				dev)
+					ChangeColorFlag=false ;;
+				task)
+					TrackColor="#CYN"
+					Branch="$TrackColor$TaskName" ;;
+				feature)
+					TrackColor="#BLU"
+					Branch="$TrackColor$TaskName" ;;
+				bug)
+					TrackColor="#MGN"
+					Branch="$TrackColor$TaskName" ;;
+				hotfix)
+					TrackColor="#MGN"
+					Branch="$TrackColor$TaskName" ;;
+				origin*)
+					if [[ $TaskName == master ]]; then
+						TrackColor="#GRN"
+					elif [[ $TaskName == dev ]]; then
+						TrackColor="#RED"
+					fi
+					Branch="$TaskType/$TaskName" ;;
+				*)
+					TrackColor="#RST"
+					Branch="$TaskName" ;;
+			esac
+		fi
+
+		if glograph.view.find_track $Node; then
+			TrackPos=$POS
+			if [[ ${#POS[@]} > 1 ]]; then
+				glograph.view.close_tracks ${POS[@]}
+			fi
+
+			unset CommitType
+			if [[ $TrackPos == 0 ]] && $HasMaster; then
+				if ! Version=$(git describe --tags --exact-match $Node 2>/dev/null); then
+					unset Version
+				fi
+				if [[ -n $Version ]]; then
+					CommitType="#rc"
+					if [[ -z $Branch ]]; then
+						Branch="#GRN[$Version]"
+					else
+						Branch="#GRN[$Version] $Branch"
+					fi
+				elif $MergeFlag; then
+					CommitType="#rc"
+				else
+					CommitType="#wc"
+				fi
+			elif [[ $TrackPos == 1 ]] && $HasDev; then
+				if [[ -n $Branch ]]; then
+					Branch="#RED$Branch"
+				fi
+				if $MergeFlag; then
+					CommitType="#ac"
+				else
+					CommitType="#wc"
+				fi
+			else
+				if $MergeFlag; then
+					CommitType="#mc"
+				else
+					CommitType="#wc"
+				fi
+			fi
+
+			glograph.view.set_track $TrackPos ${Parents[0]:-null} $CommitType
+		else
+			glograph.view.new_track
+			TrackPos=$NEWPOS
+		fi
+
+		if $MergeFlag; then
+			if glograph.view.find_track ${Parents[1]}; then
+				glograph.view.merge_track $POS $TrackPos
+			else
+				glograph.view.open_track $TrackPos
+			fi
+		fi
+
+		if [[ -n $Branch ]]; then
+			Branch="#ULN$Branch#RST "
+		fi
+
+		glograph.view.print_tracks
+		glograph.view.next_tracks
+	done
+}
+
+glograph.view.get_refs() {
+	local Refs=$1
+
+	if [[ -n $Refs ]]; then
+		REFS=(${Refs//\*/ })
+		unset NODES
+
+		local Ref
+		local -i i=0
+		for Ref in ${REFS[@]}; do
+			NODES[$i]=$(git rev-parse $Ref)
+			i+=1
+		done
+	else
+		unset REFS
+		unset NODES
+	fi
+}
+
+glograph.view.get_branchname() {
+	local Node=${1:?}
+
+	[[ -z $RefShas ]] && return 1
+
+	local -i i=0
+	local Sha
+	for Sha in $RefShas; do
+		if [[ $Sha == $Node ]]; then
+			RET=${BranchRefs[$i]}
+			return 0
+		fi
+
+		i+=1
+	done
+
+	return 1
+}
+
+glograph.view.initials() {
+	local Name=${1:?}
+	Name=${Name%%@*}
+	Name=${Name//./ }
+	unset RET
+
+	local Term
+	for Term in $Name; do
+		RET="$RET${Term::1}"
+	done
+
+	if [[ ${#RET} == 1 ]]; then
+		RET=${Term::4}
+	fi
+}
+
+glograph.view.find_track() {
+	local Node=${1:?}
+	unset POS
+
+	local i
+	for (( i = 0 ; i < $TrackCount ; i++ )); do
+		if [[ $Node == ${TrackParent[$i]} ]]; then
+			POS="$POS$i "
+		fi
+	done
+
+	[[ -z $POS ]] && return 1
+
+	POS=($POS)
+}
+
+glograph.view.new_track() {
+	local CommitType=${1:-#dc}
+
+	local i
+	for (( i = 0 ; i < $TrackCount ; i++ )); do
+		if [[ ${Tracks[$i]} == "#nl" ]]; then
+			glograph.view.set_track $i ${Parents[0]} $CommitType
+
+			NEWPOS=$i
+			break
+		fi
+	done
+}
+
+glograph.view.open_track() {
+	local -i StartPos=${1:?}
+
+	local -i i
+	for (( i = $StartPos ; i < $TrackCount ; i++ )); do
+		if [[ ${Tracks[$i]} == "#nl" ]]; then
+			TrackParent[$i]=${Parents[1]}
+			TrackLinkColor=${TrackColors[$i]}
+			Tracks[$i]="#fp"
+			break
+		else
+			TrackLinks[$i]="#ht"
+		fi
+	done
+	TrackLinks[$StartPos]="#la"
+}
+
+glograph.view.merge_track() {
+	local -i SourcePos=${1:?}
+	local -i DestPos=${2:?}
+
+	TrackLinkColor=${TrackColors[$SourcePos]}
+
+	local -i StartPos=0 EndPos=0
+	if [[ $SourcePos -le $DestPos ]]; then
+		StartPos=$SourcePos
+		EndPos=$DestPos-1
+		TrackLinks[$EndPos]="#ra"
+	else
+		StartPos=$DestPos
+		TrackLinks[$StartPos]="#la"
+		StartPos+=1
+		EndPos=$SourcePos
+	fi
+
+	local -i i
+	for (( i = $StartPos ; i < $EndPos ; i++ )); do
+		TrackLinks[$i]="#ht"
+	done
+
+	if $HasDev && [[ $SourcePos == 1 ]]; then
+		Tracks[1]="#vt"
+		DevFlag=true
+	fi
+}
+
+glograph.view.close_tracks() {
+	local List=(${@:?})
+	local SourcePos=${List[0]}
+	local TrackPosList=${List[@]}
+	local TrackPosList="-${TrackPosList// /-}-"
+	TrackPosList=${TrackPosList/-$SourcePos-/-}
+
+	# echo "cls (${List[@]}) $SourcePos [$TrackPosList]"
+
+	TrackHdLinkColor=${TrackColors[$SourcePos]}
+
+	if $HasDev && [[ $TrackPosList == *-1-* ]]; then
+		DevFlag=false
+	fi
+
+	local -i i
+	local LinkFlag=false
+	for (( i = $TrackCount - 1 ; i >= 0 ; i-- )); do
+		if [[ $TrackPosList == *-$i-* ]]; then
+			NeedsHeadFlag=true
+			LinkFlag=true
+			TrackParent[$i]="#nl"
+			TrackColors[$i]="#RST"
+			TrackHds[$i]="#st"
+			Tracks[$i]="#nl"
+		fi
+
+		if $LinkFlag && [[ $i -gt $SourcePos ]]; then
+			TrackHdLinks[$i-1]="#ht"
+		fi
+	done
+}
+
+glograph.view.set_track() {
+	local Pos=${1:?}
+	local Parent=${2:?}
+	local CommitType=${3:-#wc}
+
+	if $ChangeColorFlag; then
+		TrackColors[$Pos]=$TrackColor
+	fi
+
+	if [[ $CommitType == "#dc" ]]; then
+		Dangle="*"
+	fi
+
+	if [[ $Node == $HeadSha ]]; then
+		CommitType="#hc"
+	elif [[ $ParentCount == 0 ]]; then
+		CommitType="#ic"
+	fi
+
+	Tracks[$Pos]=$CommitType
+	TrackParent[$Pos]=$Parent
+}
+
+glograph.view.next_tracks() {
+	if $MasterFlag; then
+		Tracks[0]="#vt"
+	fi
+
+	if $DevFlag; then
+		Tracks[1]="#vt"
+	fi
+
+	local i
+	local Track
+	for (( i = 0 ; i < $TrackCount ; i++ )); do
+		TrackHdLinks[$i]="#nl#nl"
+		TrackHds[$i]="#nl"
+		TrackLinks[$i]="#nl#nl"
+		Track=${Tracks[$i]}
+		Track=${Track//#?c/#vt}
+		Track=${Track//#?p/#vt}
+		Tracks[$i]=$Track
+	done
+
+	TrackHdLinkColor="#RST"
+	TrackLinkColor="#RST"
+
+	unset Dangle
+	unset Branch
+	NeedsHeadFlag=false
+	MergeFlag=false
+}
+
+glograph.view.print_tracks() {
+	local BuiltTrackHd
+
+	local BuiltTrackHds
+	local BuiltTracks
+
+	local BuiltGraphHd
+	local BuiltGraph
+
+	local i
+	for (( i = 0 ; i < $TrackCount ; i++ )); do
+		if $NeedsHeadFlag; then
+			if [[ ${TrackHds[$i]} == "#st" ]]; then
+				BuiltTrackHd="#st"
+			else
+				BuiltTrackHd=${Tracks[$i]}
+				BuiltTrackHd=${BuiltTrackHd//#?c/#vt}
+				BuiltTrackHd=${BuiltTrackHd//#fp/#nl}
+				BuiltTrackHd=${BuiltTrackHd//#ap/#vt}
+			fi
+
+			BuiltTrackHds="$BuiltTrackHds${TrackColors[$i]}$BuiltTrackHd$TrackHdLinkColor${TrackHdLinks[$i]}"
+		fi
+
+		BuiltTracks="$BuiltTracks${TrackColors[$i]}${Tracks[$i]}$TrackLinkColor${TrackLinks[$i]}"
+	done
+
+	if $NeedsHeadFlag; then
+		BuiltGraphHd="$BuiltTrackHds"
+		BuiltGraphHd=${BuiltGraphHd//#st/\'}
+		BuiltGraphHd=${BuiltGraphHd//#ht/--}
+		BuiltGraphHd=${BuiltGraphHd//#vt/|}
+		BuiltGraphHd=${BuiltGraphHd//#bt/ }
+		BuiltGraphHd=${BuiltGraphHd//#nl/ }
+
+		utils.format_text "$BuiltGraphHd"; BuiltGraphHd=$RET
+
+		echo -e "$BuiltGraphHd"
+	fi
+
+	BuiltGraph="$BuiltTracks"
+	BuiltGraph=${BuiltGraph//#hc/$}
+	BuiltGraph=${BuiltGraph//#rc/X}
+	BuiltGraph=${BuiltGraph//#ac/o}
+	BuiltGraph=${BuiltGraph//#dc/@}
+	BuiltGraph=${BuiltGraph//#mc/x}
+	BuiltGraph=${BuiltGraph//#wc/•}
+	BuiltGraph=${BuiltGraph//#ic/§}
+	BuiltGraph=${BuiltGraph//#la/<-}
+	BuiltGraph=${BuiltGraph//#ra/->}
+	BuiltGraph=${BuiltGraph//#ma/<=}
+	BuiltGraph=${BuiltGraph//#fp/,}
+	BuiltGraph=${BuiltGraph//#ap/|}
+	BuiltGraph=${BuiltGraph//#ht/--}
+	BuiltGraph=${BuiltGraph//#vt/|}
+	BuiltGraph=${BuiltGraph//#bt/ }
+	BuiltGraph=${BuiltGraph//#nl/ }
+
+	utils.format_text -w $COLS_GRAPH "$BuiltGraph";       BuiltGraph=$RET
+	utils.format_text -w $COLS_DANGLE "$Dangle";          Dangle=$RET
+	utils.format_text -w $COLS_TEXT "$Branch$CommitText"; CommitText=$RET
+	utils.format_text -w $COLS_COMMITTER "$Committer";    Committer=$RET
+
+	echo -e "$BuiltGraph$Dangle$CommitText$CommitDate $Committer${Node::7}"
+}

@@ -1,0 +1,339 @@
+#!/usr/bin/env bash
+
+# =====[ LIB : SCRIPT UTILS ]==================================================
+#
+#	Written by Francois Joubert
+#	Sep 2013
+#
+#	Script utilities - common tools for bash scripting.
+#
+# =============================================================================
+
+# -----[ FUNCTIONS ]-----------------------------------------------------------
+
+#[DEPRICATED]
+utils.prompt() {
+	prompt "$@"
+}
+
+#[DEPRICATED]
+utils.exit_if_empty() {
+	if [[ $1 == - || $1 == -- ]]; then
+		Message=$2
+		[[ ! -z $Message ]] && echo $Message
+		terminate syserr_gen
+	fi
+}
+
+utils.up_until() {
+    Condition=${1:?}
+
+    # echo "$Condition"
+    while ! eval "$Condition"; do
+        cd ..
+
+        if [[ $(pwd) == / ]]; then
+            return 1
+        fi
+    done
+}
+
+utils.color_text() {
+	ctText="$1"
+
+	if [[ -z $ctText ]]; then
+		unset RET
+		return
+	fi
+
+	ctTextFormats[00]="\#RST|\033[00m"
+	ctTextFormats[01]="\#BLD|\033[01m"
+	ctTextFormats[02]="\#ULN|\033[04m"
+	ctTextFormats[10]="\#RED|\033[31m"
+	ctTextFormats[11]="\#GRN|\033[32m"
+	ctTextFormats[12]="\#YLW|\033[33m"
+	ctTextFormats[13]="\#BLU|\033[34m"
+	ctTextFormats[14]="\#MGN|\033[35m"
+	ctTextFormats[15]="\#CYN|\033[36m"
+
+	for ctFormat in ${ctTextFormats[@]}; do
+		ctFormatParts=(${ctFormat/|/ })
+		ctText="${ctText//${ctFormatParts[0]}/${ctFormatParts[1]}}"
+	done
+
+	RET="$ctText\033[0m"
+}
+
+utils.format_text() {
+	unset ftWidth
+	if [[ $1 == -w ]]; then
+		ftWidth=$2
+		shift 2
+	fi
+	ftText=$1
+
+	ftTextStripped=$ftText
+	# for ftFormat in $ftTextFormats; do
+	# 	ftFormatTag=${ftFormat%|*}
+	# 	ftFormatCode=${ftFormat#*|}
+	# 	ftText=${ftText//$ftFormatTag/$ftFormatCode}
+	# 	ftTextStripped=${ftTextStripped//$ftFormatTag}
+	# done
+
+	ftText=${ftText//#RST/\\033[00m}
+	ftText=${ftText//#BLD/\\033[01m}
+	ftText=${ftText//#ULN/\\033[04m}
+	ftText=${ftText//#RED/\\033[31m}
+	ftText=${ftText//#GRN/\\033[32m}
+	ftText=${ftText//#YLW/\\033[33m}
+	ftText=${ftText//#BLU/\\033[34m}
+	ftText=${ftText//#MGN/\\033[35m}
+	ftText=${ftText//#CYN/\\033[36m}
+
+	unset ftSpaces
+	if [[ -n $ftWidth ]]; then
+		ftTextStripped=${ftTextStripped//#RST}
+		ftTextStripped=${ftTextStripped//#BLD}
+		ftTextStripped=${ftTextStripped//#ULN}
+		ftTextStripped=${ftTextStripped//#RED}
+		ftTextStripped=${ftTextStripped//#GRN}
+		ftTextStripped=${ftTextStripped//#YLW}
+		ftTextStripped=${ftTextStripped//#BLU}
+		ftTextStripped=${ftTextStripped//#MGN}
+		ftTextStripped=${ftTextStripped//#CYN}
+
+		ftLen=${#ftTextStripped}
+		if [[ $ftLen -gt $ftWidth ]]; then
+			ftFullLen=${#ftText}
+			let "ftNewLen = ftFullLen - (ftLen - ftWidth) - 1" || true
+			ftText="${ftText::ftNewLen}\033[00m"
+			ftSpaces=" "
+		else
+			let "ftPad = ftWidth - ftLen" || true
+			for (( i = 0 ; i < $ftPad ; i++ )); do ftSpaces="$ftSpaces "; done
+			# ftSpaces=$(printf "%${ftPad}s")
+		fi
+	fi
+
+	RET="$ftText\033[00m$ftSpaces"
+}
+
+# -----[ READ CONFIG ]---------------------------------------------------------
+
+utils.rdc() {
+	local Identifier=${1:?}
+	local Delegate=${2}
+	local DelegateArgs
+	if [[ -n $Delegate ]]; then
+		shift 2 || true
+		DelegateArgs="$@"
+	fi
+
+	local ConfigFile=~/.landobyte/user.config
+	if [[ ! -f $ConfigFile ]]; then
+		raise enverr_no_config "No config found."
+	fi
+
+	utils.config.lex $ConfigFile; local Tokens=$RET
+	if [[ -n $Tokens ]]; then
+		utils.config.parse "$Tokens" $Identifier $Delegate $DelegateArgs; # RET=$RET
+	else
+		print -w "Please update your user.config to the new version."
+		RET=$(rdc landobyte $Identifier || true)
+	fi
+}
+
+utils.config.lex() {
+	local Content=${1:?}
+
+	if [[ -f $Content ]]; then
+		Content=$(< $Content)
+	fi
+
+	if [[ $Content != *"::"* ]]; then
+		RET=""
+		return
+	fi
+
+	Content=${Content//$'\t'}
+
+	Content=${Content//$'\n'/§}
+	Content=${Content//,/§}
+	Content=${Content//{/{§}
+	Content=${Content//\[/\[§}
+	Content=${Content//\}/§\}}
+	Content=${Content//\]/§\]}
+
+	Content=${Content##*::}
+
+	RET=$Content
+}
+
+utils.config.parse() {
+	local Tokens=${1:?}
+	local Identifier=${2:?}
+	Identifier=(${Identifier//./ })
+	local Delegate=$3 DelegateArgs
+	if [[ -n $Delegate ]]; then
+		shift 3 || true
+		DelegateArgs=$@
+	fi
+
+	local -i IdentifierIndex=0
+	local IdentifierKey=${Identifier[$IdentifierIndex]}
+
+	local ObjType=none
+	local IgnoreMode=false
+	local ReadMode=false
+	local -i Level=0
+
+	local Value=""
+	local Token
+
+	shopt -s extglob
+	local _IFS=$IFS; IFS='§'
+	for Token in $Tokens; do
+		Token=${Token##+( )}
+		Token=${Token%%+( )}
+		# Token=${Token//\"}
+
+		if [[ -z $Token ]]; then
+			continue
+		fi
+
+		if [[ $Token == "#"* ]]; then
+			continue
+		fi
+
+		RET=""
+
+		if $ReadMode; then
+			# echo "Read Mode"
+			utils.config.parse.calc_level $Token $Level; Level=$RET
+			if [[ $Level == 0 ]]; then
+				if [[ $Value == \"*\" ]]; then
+					Value=${Value#\"}
+					Value=${Value%\"}
+				fi
+				RET="$Value"; break
+			fi
+
+			Value+="${Token}§"
+
+			if [[ $Level == 1 && -n $Delegate ]]; then
+				IFS=$_IFS
+				Value=${Value%§}
+				if [[ $Value == \"*\" ]]; then
+					Value=${Value#\"}
+					Value=${Value%\"}
+				fi
+				$Delegate "$Value" $DelegateArgs
+				IFS='§'
+				Value=""
+			fi
+	 	elif $IgnoreMode; then
+			# echo "Ignore Mode"
+			utils.config.parse.calc_level $Token $Level; Level=$RET
+			if [[ $Level == 0 ]]; then
+				# echo "IGNORE OFF $RET"
+				IgnoreMode=false
+			fi
+		elif [[ $Token == *":"* ]]; then
+			# echo "Checking Token/Key [$Token|$IdentifierKey]"
+			if [[ $Token == $IdentifierKey* ]]; then
+				# echo "Key FOUND"
+				IdentifierIndex+=1
+				if [[ $IdentifierIndex < ${#Identifier[@]} ]]; then
+					IdentifierKey=${Identifier[$IdentifierIndex]}
+				else
+					if utils.config.parse.is_struct $Token; then
+						Level+=1
+						ReadMode=true
+					else
+						Value=${Token#*:}
+						Value=${Value##+( )}
+						Value=${Value%%+( )}
+						if [[ $Value == \"*\" ]]; then
+							Value=${Value#\"}
+							Value=${Value%\"}
+						fi
+						if [[ -n $Delegate ]]; then
+							IFS=$_IFS
+							$Delegate "$Value" $DelegateArgs
+							IFS='§'
+						fi
+						RET="$Value"; break
+					fi
+				fi
+			else
+				if utils.config.parse.is_struct $Token; then
+					Level+=1
+					IgnoreMode=true
+					# echo "IGNORE ON"
+				fi
+			fi
+		elif [[ $Token == "{" && $IdentifierKey == "root" ]]; then
+			Level+=1
+			ReadMode=true
+		fi
+		# echo "L$Level: $Token"
+	done
+	IFS=$_IFS
+}
+
+utils.config.parse.calc_level() {
+	local Token=${1:?}
+	local -i Level=${2:?}
+
+	if [[ $Token == *"{" || $Token == *"[" ]]; then
+		Level+=1
+	elif [[ $Token == *"}" || $Token == *"]" ]]; then
+		Level+=-1
+	fi
+
+	RET=$Level
+}
+
+utils.config.parse.is_struct() {
+	local Token=${1:?}
+
+	if [[ $Token != *"{" && $Token != *"[" ]]; then
+		return 1
+	fi
+}
+
+# -----[ STATE GET SET ]-------------------------------------------------------
+
+utils.get_state() {
+	local Identifier=${1:?}
+	local Wd=$(pwd)
+
+	xgit.goto_repo_root
+
+	mkdir -p .git/xgit
+	cd .git/xgit
+
+	unset RET
+	if [[ -f $Identifier ]]; then
+		RET="$(< $Identifier)"
+	fi
+
+	cd $Wd
+}
+
+utils.set_state() {
+	local Identifier=${1:?}
+	local Value=${2:?}
+	local Wd=$(pwd)
+
+	xgit.goto_repo_root
+
+	mkdir -p .git/xgit
+	cd .git/xgit
+
+	echo $Value > $Identifier
+
+	cd $Wd
+}
+
+# =============================================================================

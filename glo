@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # =====[ GLO ]=================================================================
 #
@@ -9,58 +9,70 @@
 #
 # =============================================================================
 
-source stdlib
-[[ -f ~/.gloconfig ]] && source ~/.gloconfig
+LIB_Root=${0%/*}/libs
+source $LIB_Root/stdlib
 
-lib import scrutils
+import utils
+import xgit
 
-lib import glocore
-lib import glogit
-lib import glovis
-lib import xgit
+import glocore		# Core functions [init, task, st, retrieve, etc]
+import glogit		# Git synonyms
+import glotodo		# Todo
+import gloconfig	# Config tools
+import glograph		# Graphing
+import gloutils		# Helper functions
 
-lib info stdlib
-lib info glocore
-lib info glogit
-lib info glovis
+cmdo2 'version->glo.version'
+cmdo2 'selfup->glo.selfupdate'
+cmdo2 'internal->glo.internal'
+cmdo2 'sandbox->glo.sandbox'
+
+# -----[ VERSION ]-------------------------------------------------------------
+
+# [info-doc version]
+# {BLU}version
+#   Displays the current version of glo.
+glo.version() {
+	xgit.version_current
+	print $RET
+}
+
+# -----[ SELFUP ]--------------------------------------------------------------
+
+# [info-doc selfupdate]
+# {BLU}selfupdate
+#   Updates itself.
+glo.selfupdate() {
+	print -i "Checking for updates..."
+	cd $(dirname $0)
+
+	if xgit.is_wd_dirty; then
+		prompt "Uncommitted changes detected - discard changes and continue?" yes:continue !abort:abort
+
+		git reset --hard HEAD
+	fi
+
+	git pull --no-edit
+}
 
 # -----[ INTERNAL ]------------------------------------------------------------
 
-glo_internal() {
+glo.internal() {
+	print -i "INTERNAL: $@"
 	$@
+	print -i "RETURN $?: [$RET]"
 }
 
-# -----[ INVALID ]-------------------------------------------------------------
-
-glo_invalid_cmd() {
-	echo "!> No valid command specified."
-	echo ">> Run 'glo help'"
+glo.sandbox() {
+	echo bla
 }
 
 # -----[ MAIN ]----------------------------------------------------------------
 
-cmdo "init->glo_init
-	  
-	  task|t->glo_task
-	  feature|f->glo_feature
-	  bug|b->glo_bug
-	  hotfix|fix->glo_hotfix
-	  st|bak|up|apply|end|ls|log->glo_%
-	  visual|vis->glo_visual
+io.activate_tracing
 
-	  commit|ci->glo_commit
-	  cii|cia|add|diff->glo_%
-	  wip|unwip->glo_%
-	  reset->glo_%
-	  resolve->glo_resolve
+cmdo2 run "$@"
 
-	  release|rel|r->glo_release
-	  
-	  update->glo_update
-	  
-	  version->glo_version
-	  internal->glo_internal
-	  help|info|?->print_info
-	  &->glo_invalid_cmd" "$@"
+terminate ok
 
 # =============================================================================

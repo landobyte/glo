@@ -1,0 +1,59 @@
+#!/bin/bash
+
+# =====[ TODO TEST SUITE ]===================================================
+#
+#	Written by Francois Joubert
+#	Jul 2014
+#
+# =============================================================================
+
+source tacts
+source ~/.landobyte/apps/sht/git_env_init
+
+# -----[ TESTS ]---------------------------------------------------------------
+
+test.todo_basic() {
+	echo "T> Todo"
+	glo todo
+}
+
+test.todo_all() {
+	echo "T> Todo all"
+	glo todo -a
+}
+
+test.todo_add() {
+	echo "T> New todo"
+	glo todo Super todo to be done
+}
+
+# -----[ INIT & END ]----------------------------------------------------------
+
+todo.init_suite() {
+	export IO_AutoRespondMode=true
+	export IO_PrintIndent="  |"
+
+	if [[ ! -d dev/system/.git ]]; then
+		git_env_init.run
+	fi
+
+	cd dev/system
+
+	return 0
+}
+
+todo.end_suite() {
+	return 0
+}
+
+todo.init_test() {
+	[[ -d modules/system ]]
+
+	return 0
+}
+
+todo.end_test() {
+	return 0
+}
+
+# =============================================================================
