@@ -53,28 +53,6 @@ import.find_lib() {
 	fi
 }
 
-# lib() {
-# 	local Cmd=${1:?}
-# 	local Arg=${2:?}
-
-# 	if [[ $Cmd == import ]]; then # DEPRICATED
-# 		import $Arg
-# 	elif [[ $Cmd == def ]]; then # DEPRICATED
-# 		local LibName=${Arg##*/}
-# 		debug -5 "Loading $LibName (${BASH_SOURCE[1]})..."
-# 		__STDImports[$LibName]=true
-# 	elif [[ $Cmd == info ]]; then # DEPRICATED
-# 		import.find_lib $Arg; Arg=$RET
-# 		__STDInfoList+="$Arg "
-# 	elif [[ $Cmd == clr ]]; then
-# 		if [[ $Arg == cmdo ]]; then
-# 			unset __STDCommands
-# 		elif [[ $Arg == info ]]; then
-# 			unset __STDInfoList
-# 		fi
-# 	fi
-# }
-
 import stdio
 
 # -----[ ARG OPTIONS ]---------------------------------------------------------

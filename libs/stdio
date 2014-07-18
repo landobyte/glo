@@ -190,8 +190,7 @@ prompt() {
 
 # -----[ INFO / HELP ]---------------------------------------------------------
 
-# [info-doc print info]
-# {BLU}help [-nohead] [-short | -synopsis] <FilterFunction|all>
+# help [-nohead] [-short | -synopsis] <FilterFunction|all>
 #   Prints help for a specific sub command <FilterFunction> or all available help if <FilterFunction> = all (default).
 #   Aliases: info | ?
 #   -nohead	Does not print the header.
@@ -210,11 +209,11 @@ print_info() {
 	infoTextFormats[14]="{MGN}|\033[35m"
 	infoTextFormats[15]="{CYN}|\033[36m"
 
-	if ! $infoNoHeader; then
-		echo
-		echo "     ------------------===:[ INFO PAGE ]:===------------------"
-		echo
-	fi
+	# if ! $infoNoHeader; then
+	# 	echo
+	# 	echo "     ------------------===:[ INFO PAGE ]:===------------------"
+	# 	echo
+	# fi
 
 	for Lib in ${BASH_SOURCE[0]} $__STDInfoList; do
 		# echo $Lib
