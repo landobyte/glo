@@ -20,7 +20,7 @@ When it is time to create a release of your repo, run:<br>
 which will automatically create a release version of the latest state of the dev branch and mark it with the next version number. This release commit is merged into master, which is the 'release branch'.
 
 ### Many more features
-Glo has many feature to ease the process of keeping your repo neat and synced so that you can get on with your work. One  powerful features of glo is `glo view` which shows you the repo branch structure in an intuitive way. It is much like `git log --graph` but it handles master and dev as special, thus displaying more natural representation of the repo.
+Glo has many feature to ease the process of keeping your repo neat and synced so that you can get on with your work. One  powerful features of glo is `glo view` which shows you the repo branch structure in an intuitive way. It is much like `git log --graph` but it handles master and dev as special, thus displaying a more natural representation of the repo.
 
 ```shell
    $           dev Dev commit: Quick work           2014-02-22 FJ   6e3fbc7
@@ -114,7 +114,7 @@ $> git log --graph --oneline
 ```
 
 ### Plugins
-Glo even allow you to extend it's behavior with plugins. An example plugin is available in the plugins directory.
+Glo even allows you to extend it's behavior with plugins. An example plugin is available in the plugins directory.
 
 ### Comments
 
