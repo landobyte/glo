@@ -6,7 +6,7 @@ Make a simlink to glo in this repo or add it to your path and run 'glo help' - t
 Glo is 100% written in bash-script.
 
 ### Basics
-Glo works with two main branches (master and dev) that is shared accorss repos. With every command that reads or modifies these branches they are sync first. This way they may allways be fast forwarded and will never diverge from local coppies of the branches.
+Glo works with two main branches (master and dev) that is shared accorss repos. With every command that reads or modifies these branches they are sync first. This way they may always be fast forwarded and will never diverge from local coppies of the branches.
 
 Development is done in task branches and merged into dev if the task is complete.
 
@@ -20,7 +20,7 @@ When it is time to create a release of your repo, run:<br>
 which will automatically create a release version of the latest state of the dev branch and mark it with the next version number. This release commit is merged into master, which is the 'release branch'.
 
 ### Many more features
-Glo has many feature to ease the process of keeping your repo neat and synced so that you can get on with your work. One  powerfull features of glo is `glo view` which shows you the repo branch structure in an intuitive way. It is much like `git log --graph` but it handles master and dev as special, thus displaying more natural representation of the repo.
+Glo has many feature to ease the process of keeping your repo neat and synced so that you can get on with your work. One  powerful features of glo is `glo view` which shows you the repo branch structure in an intuitive way. It is much like `git log --graph` but it handles master and dev as special, thus displaying more natural representation of the repo.
 
 ```shell
    $           dev Dev commit: Quick work           2014-02-22 FJ   6e3fbc7
@@ -114,7 +114,7 @@ $> git log --graph --oneline
 ```
 
 ### Plugins
-Glo even allow you to extend it's behaviour with plugins. An example plugin is available in the plugins directory.
+Glo even allow you to extend it's behavior with plugins. An example plugin is available in the plugins directory.
 
 ### Comments
 
