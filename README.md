@@ -112,6 +112,8 @@ $> git log --graph --oneline
 *   d827188 Added feature feature8
 :
 ```
+### Submodules or Dependencies
+Glo handles submodules or dependencies smoothly. Many actions can be performed on submodules from the main repo directory.
 
 ### Plugins
 Glo even allows you to extend it's behavior with plugins. An example plugin is available in the plugins directory.
